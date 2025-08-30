@@ -1,0 +1,31 @@
+tokens:
+  main: "YOUR_MAIN_BOT_TOKEN"
+  admin: "YOUR_ADMIN_BOT_TOKEN"
+
+admin_id: YOUR_TELEGRAM_ID
+
+redis:
+  host: "localhost"
+  port: 6379
+
+vpn:
+  dir: "/etc/openvpn/client-configs/"
+  default_port: 1194
+  price: 100
+  speed_limit: "10mbit"
+  
+payment:
+  yoomoney:
+    token: "YOOMONEY_API_TOKEN"
+    wallet: "YOOMONEY_WALLET"
+  
+referral:
+  trial_days: 7
+  bonus_days: 7
+
+notifications:
+  days_before_expire: [3, 1]
+
+logging:
+  level: "INFO"
+  file: "/var/log/coffeecoma.log"
