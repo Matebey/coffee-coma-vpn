@@ -77,15 +77,15 @@ set_var EASYRSA_CRL_DAYS       180
 EOF
 
 # Инициализируем PKI
-./easyrsa init-pki
-echo -e "\n\n" | ./easyrsa build-ca nopass
+./easyrsa --batch init-pki
+./easyrsa --batch build-ca nopass
 
 # Генерируем серверный сертификат
-./easyrsa gen-req server nopass
-echo "yes" | ./easyrsa sign-req server server
+./easyrsa --batch gen-req server nopass
+./easyrsa --batch sign-req server server
 
 # Генерируем DH параметры и TLS ключ
-./easyrsa gen-dh
+./easyrsa --batch gen-dh
 openvpn --genkey --secret pki/ta.key
 
 # Создаем конфигурацию сервера
