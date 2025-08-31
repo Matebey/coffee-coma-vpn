@@ -43,4 +43,23 @@ PRICES = {
 }
 
 DNS_SERVERS = [get_setting('dns1', '8.8.8.8'), get_setting('dns2', '8.8.4.4')]
+
+OVPN_PORT = get_setting('port', '1194')
+def get_setting(key, default=None):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else default
+    except:
+        return default
+
+# Динамические настройки (теперь будут обновляться из БД)
+PRICES = {
+    "1_month": int(get_setting('price', 50))
+}
+
+DNS_SERVERS = [get_setting('dns1', '8.8.8.8'), get_setting('dns2', '8.8.4.4')]
 OVPN_PORT = get_setting('port', '1194')
