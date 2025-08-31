@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
-from config import BOT_TOKEN, ADMINS, OVPN_KEYS_DIR, OVPN_CLIENT_DIR, DB_PATH, DNS_SERVERS, OVPN_PORT
+from config import BOT_TOKEN, ADMINS, OVPN_KEYS_DIR, OVPN_CLIENT_DIR, DB_PATH, DNS_SERVERS, OVPN_PORT, yoomoney_api, PRICES
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -213,7 +213,7 @@ class VPNBot:
     async def buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         price = self.db.get_setting('price', 50)
-        payment_url = f"https://yoomoney.ru/quickpay/confirm.xml?receiver=ВАШ_НОМЕР_КОШЕЛЬКА&quickpay-form=small&sum={price}&label=vpn_{user.id}&paymentType=AC"
+        payment_url = f"https://yoomoney.ru/quickpay/confirm.xml?receiver={YOOMONEY_WALLET}&quickpay-form=small&sum={price}&label=vpn_{user.id}&paymentType=AC"
         
         keyboard = [
             [InlineKeyboardButton(f"💳 Оплатить {price} руб", url=payment_url)],
@@ -229,18 +229,29 @@ class VPNBot:
 
     async def check_payment(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
-        client_name = f"user_{user_id}_{int(datetime.now().timestamp())}"
+        price = self.db.get_setting('price', 50)
+        label = f"vpn_{user_id}"
         
-        try:
-            config_path = self.ovpn.create_client_config(client_name)
-            self.db.add_subscription(user_id, client_name, config_path, 30)
+        # Проверяем платеж через ЮMoney API
+        payment_received = yoomoney_api.check_payment(label, price)
+        
+        if payment_received:
+            client_name = f"user_{user_id}_{int(datetime.now().timestamp())}"
             
-            await update.message.reply_document(
-                document=open(config_path, 'rb'),
-                caption="✅ Оплата подтверждена! Ваш конфиг на 30 дней создан!"
+            try:
+                config_path = self.ovpn.create_client_config(client_name)
+                self.db.add_subscription(user_id, client_name, config_path, 30)
+                
+                await update.message.reply_document(
+                    document=open(config_path, 'rb'),
+                    caption="✅ Оплата подтверждена! Ваш конфиг на 30 дней создан!"
+                )
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка при создании конфига: {str(e)}")
+        else:
+            await update.message.reply_text(
+                "❌ Оплата не найдена. Пожалуйста, подождите несколько минут или проверьте правильность оплаты."
             )
-        except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
     async def my_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
