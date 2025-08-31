@@ -33,17 +33,16 @@ class YooMoneyAPI:
     def __init__(self, wallet, secret):
         self.wallet = wallet
         self.secret = secret
-        self.base_url = "https://yoomoney.ru/api"
     
     def check_payment(self, label, amount):
         """Проверяет наличие платежа по метке"""
         try:
             # В реальной реализации используйте официальное API ЮMoney
-            # Это заглушка для демонстрации
+            # Это демо-реализация
             import time
-            time.sleep(2)  # Имитация проверки
+            time.sleep(2)
             
-            # Для тестирования всегда возвращаем False
+            # Всегда возвращаем False для тестирования
             # В продакшене замените на реальную проверку
             return False
             
