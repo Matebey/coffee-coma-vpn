@@ -97,16 +97,16 @@ class OpenVPNManager:
 
     def create_client_config(self, client_name):
         try:
-            # Создаем запрос сертификата без интерактивного ввода
+            # Создаем запрос сертификата
             subprocess.run([
-                'cd', '/etc/openvpn/easy-rsa',
-                '&&', './easyrsa', '--batch', 'gen-req', client_name, 'nopass'
+                '/usr/bin/env', 'bash', '-c', 
+                f'cd /etc/openvpn/easy-rsa && ./easyrsa --batch gen-req {client_name} nopass'
             ], check=True, capture_output=True, text=True, timeout=30)
             
             # Подписываем сертификат
             subprocess.run([
-                'cd', '/etc/openvpn/easy-rsa',
-                '&&', './easyrsa', '--batch', 'sign-req', 'client', client_name
+                '/usr/bin/env', 'bash', '-c', 
+                f'cd /etc/openvpn/easy-rsa && echo "yes" | ./easyrsa --batch sign-req client {client_name}'
             ], check=True, capture_output=True, text=True, timeout=30)
             
         except subprocess.CalledProcessError as e:
@@ -158,18 +158,16 @@ key-direction 1
     def revoke_client(self, client_name):
         try:
             subprocess.run([
-                'cd', '/etc/openvpn/easy-rsa',
-                '&&', './easyrsa', '--batch', 'revoke', client_name
+                '/usr/bin/env', 'bash', '-c', 
+                f'cd /etc/openvpn/easy-rsa && echo "yes" | ./easyrsa --batch revoke {client_name}'
             ], check=True, capture_output=True, text=True, timeout=30)
             
             subprocess.run([
-                'cd', '/etc/openvpn/easy-rsa',
-                '&&', './easyrsa', '--batch', 'gen-crl'
+                '/usr/bin/env', 'bash', '-c', 
+                f'cd /etc/openvpn/easy-rsa && ./easyrsa --batch gen-crl'
             ], check=True, capture_output=True, text=True, timeout=30)
             
-            subprocess.run([
-                'systemctl', 'restart', 'openvpn@server'
-            ], check=True, capture_output=True, text=True, timeout=30)
+            subprocess.run(['systemctl', 'restart', 'openvpn@server'], check=True, timeout=30)
             
             config_path = os.path.join(OVPN_CLIENT_DIR, f'{client_name}.ovpn')
             if os.path.exists(config_path):
@@ -177,7 +175,8 @@ key-direction 1
                 
             return True
             
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as e:
+            print(f"Ошибка отзыва ключа: {e}")
             return False
 
 class VPNBot:
@@ -186,6 +185,11 @@ class VPNBot:
         self.ovpn = OpenVPNManager()
         self.application = Application.builder().token(BOT_TOKEN).build()
         
+        # Регистрируем обработчики
+        self.setup_handlers()
+
+    def setup_handlers(self):
+        """Настройка всех обработчиков команд"""
         self.application.add_handler(CommandHandler("start", self.start))
         self.application.add_handler(CommandHandler("buy", self.buy))
         self.application.add_handler(CommandHandler("myconfig", self.my_config))
@@ -199,6 +203,9 @@ class VPNBot:
         user = update.effective_user
         self.db.add_user(user.id, user.first_name, user.username)
         
+        await self.show_main_menu(update.message, user)
+
+    async def show_main_menu(self, message, user):
         keyboard = [
             [InlineKeyboardButton("🛒 Купить доступ", callback_data='buy')],
             [InlineKeyboardButton("📁 Мой конфиг", callback_data='myconfig')]
@@ -209,9 +216,9 @@ class VPNBot:
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_html(
-            f"Привет, {user.mention_html()}!\\n\\n"
-            "🤖 <b>Coffee Coma VPN Bot</b> - продажа доступа к VPN серверу\\n\\n"
+        await message.reply_text(
+            f"Привет, {user.first_name}!\\n\\n"
+            "🤖 Coffee Coma VPN Bot - продажа доступа к VPN серверу\\n\\n"
             "Выберите действие:",
             reply_markup=reply_markup
         )
@@ -330,13 +337,13 @@ class VPNBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        message = "⚙️ <b>Текущие настройки сервера:</b>\n\n"
-        message += f"🌐 <b>DNS серверы:</b> {dns1}, {dns2}\n"
-        message += f"🔌 <b>Порт OpenVPN:</b> {port}\n"
-        message += f"💰 <b>Цена подписки:</b> {price} руб\n\n"
+        message = "⚙️ Текущие настройки сервера:\n\n"
+        message += f"🌐 DNS серверы: {dns1}, {dns2}\n"
+        message += f"🔌 Порт OpenVPN: {port}\n"
+        message += f"💰 Цена подписки: {price} руб\n\n"
         message += "Выберите параметр для изменения:"
         
-        await update.message.reply_html(message, reply_markup=reply_markup)
+        await update.message.reply_text(message, reply_markup=reply_markup)
 
     async def manage_keys(self, query):
         user_id = query.from_user.id
@@ -368,39 +375,39 @@ class VPNBot:
         query = update.callback_query
         await query.answer()
         
-        user_id = query.from_user.id
+        data = query.data
         
-        if query.data == 'buy':
-            await self.buy(update, context)
-        elif query.data == 'myconfig':
-            await self.my_config(update, context)
-        elif query.data == 'admin_panel':
-            await self.admin_panel(update, context)
-        elif query.data == 'admin_free':
+        if data == 'buy':
+            await self.buy_callback(query)
+        elif data == 'myconfig':
+            await self.my_config_callback(query)
+        elif data == 'admin_panel':
+            await self.admin_panel_callback(query)
+        elif data == 'admin_free':
             await self.create_free_config(query)
-        elif query.data == 'admin_settings':
-            await self.settings_panel(update, context)
-        elif query.data == 'admin_keys':
+        elif data == 'admin_settings':
+            await self.settings_panel_callback(query)
+        elif data == 'admin_keys':
             await self.manage_keys(query)
-        elif query.data == 'admin_stats':
+        elif data == 'admin_stats':
             await self.show_stats(query)
-        elif query.data == 'admin_back':
-            await self.admin_panel(update, context)
-        elif query.data == 'main_menu':
-            await self.start_callback(query)
-        elif query.data == 'change_dns':
+        elif data == 'admin_back':
+            await self.admin_panel_callback(query)
+        elif data == 'main_menu':
+            await self.show_main_menu(query.message, query.from_user)
+        elif data == 'change_dns':
             context.user_data['awaiting_input'] = 'dns'
             await query.message.reply_text("Введите новые DNS серверы через пробел (например: 1.1.1.1 1.0.0.1):")
-        elif query.data == 'change_port':
+        elif data == 'change_port':
             context.user_data['awaiting_input'] = 'port'
             await query.message.reply_text("Введите новый порт для OpenVPN (например: 443):")
-        elif query.data == 'change_price':
+        elif data == 'change_price':
             context.user_data['awaiting_input'] = 'price'
             await query.message.reply_text("Введите новую цену подписки в рублях (например: 100):")
-        elif query.data == 'check_payment':
-            await self.check_payment(update, context)
-        elif query.data.startswith('revoke_'):
-            client_name = query.data.replace('revoke_', '')
+        elif data == 'check_payment':
+            await self.check_payment_callback(query)
+        elif data.startswith('revoke_'):
+            client_name = data.replace('revoke_', '')
             success = self.ovpn.revoke_client(client_name)
             if success:
                 self.db.delete_subscription(client_name)
@@ -412,27 +419,126 @@ class VPNBot:
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.message.reply_text(f"❌ Ошибка при отзыве ключа {client_name}", reply_markup=reply_markup)
 
-    async def start_callback(self, query):
+    async def buy_callback(self, query):
         user = query.from_user
-        self.db.add_user(user.id, user.first_name, user.username)
+        price = self.db.get_setting('price', 50)
+        payment_url = f"https://yoomoney.ru/quickpay/confirm.xml?receiver=4100117852673007&quickpay-form=small&sum={price}&label=vpn_{user.id}&paymentType=AC"
         
         keyboard = [
-            [InlineKeyboardButton("🛒 Купить доступ", callback_data='buy')],
-            [InlineKeyboardButton("📁 Мой конфиг", callback_data='myconfig')]
+            [InlineKeyboardButton(f"💳 Оплатить {price} руб", url=payment_url)],
+            [InlineKeyboardButton("✅ Проверить оплату", callback_data='check_payment')],
+            [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
         ]
-        
-        if self.db.is_admin(user.id):
-            keyboard.append([InlineKeyboardButton("👨‍💻 Админ панель", callback_data='admin_panel')])
-        
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.message.edit_text(
-            f"Привет, {user.first_name}!\\n\\n"
-            "🤖 <b>Coffee Coma VPN Bot</b> - продажа доступа к VPN серверу\\n\\n"
-            "Выберите действие:",
-            reply_markup=reply_markup,
-            parse_mode='HTML'
+            f"Оплатите {price} рублей за доступ на 1 месяц\\n\\n"
+            "После оплаты нажмите 'Проверить оплату'",
+            reply_markup=reply_markup
         )
+
+    async def my_config_callback(self, query):
+        user_id = query.from_user.id
+        config_path = self.db.get_user_config(user_id)
+        
+        if config_path and os.path.exists(config_path):
+            keyboard = [
+                [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.message.reply_document(
+                document=open(config_path, 'rb'),
+                caption="Ваш конфигурационный файл OpenVPN",
+                reply_markup=reply_markup
+            )
+        else:
+            keyboard = [
+                [InlineKeyboardButton("🛒 Купить доступ", callback_data='buy')],
+                [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.message.edit_text(
+                "У вас нет активной подписки. Купите доступ",
+                reply_markup=reply_markup
+            )
+
+    async def admin_panel_callback(self, query):
+        user_id = query.from_user.id
+        if not self.db.is_admin(user_id):
+            await query.message.edit_text("❌ Доступ запрещен")
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("🎁 Бесплатный доступ", callback_data='admin_free')],
+            [InlineKeyboardButton("⚙️ Настройки сервера", callback_data='admin_settings')],
+            [InlineKeyboardButton("🗑️ Управление ключами", callback_data='admin_keys')],
+            [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
+            [InlineKeyboardButton("🔙 В главное меню", callback_data='main_menu')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.message.edit_text("👨‍💻 Панель администратора:", reply_markup=reply_markup)
+
+    async def settings_panel_callback(self, query):
+        user_id = query.from_user.id
+        if not self.db.is_admin(user_id):
+            await query.message.edit_text("❌ Доступ запрещен")
+            return
+        
+        dns1 = self.db.get_setting('dns1', '8.8.8.8')
+        dns2 = self.db.get_setting('dns2', '8.8.4.4')
+        port = self.db.get_setting('port', '1194')
+        price = self.db.get_setting('price', '50')
+        
+        keyboard = [
+            [InlineKeyboardButton(f"🌐 DNS: {dns1} {dns2}", callback_data='change_dns')],
+            [InlineKeyboardButton(f"🔌 Порт: {port}", callback_data='change_port')],
+            [InlineKeyboardButton(f"💰 Цена: {price} руб", callback_data='change_price')],
+            [InlineKeyboardButton("🔙 Назад", callback_data='admin_back')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message = "⚙️ Текущие настройки сервера:\n\n"
+        message += f"🌐 DNS серверы: {dns1}, {dns2}\n"
+        message += f"🔌 Порт OpenVPN: {port}\n"
+        message += f"💰 Цена подписки: {price} руб\n\n"
+        message += "Выберите параметр для изменения:"
+        
+        await query.message.edit_text(message, reply_markup=reply_markup)
+
+    async def check_payment_callback(self, query):
+        user_id = query.from_user.id
+        price = self.db.get_setting('price', 50)
+        label = f"vpn_{user_id}"
+        
+        payment_received = yoomoney_api.check_payment(label, price)
+        
+        if payment_received:
+            client_name = f"user_{user_id}_{int(datetime.now().timestamp())}"
+            
+            try:
+                config_path = self.ovpn.create_client_config(client_name)
+                self.db.add_subscription(user_id, client_name, config_path, 30)
+                
+                await query.message.reply_document(
+                    document=open(config_path, 'rb'),
+                    caption="✅ Оплата подтверждена! Ваш конфиг на 30 дней создан!"
+                )
+            except Exception as e:
+                await query.message.edit_text(f"❌ Ошибка при создании конфига: {str(e)}")
+        else:
+            keyboard = [
+                [InlineKeyboardButton("🔄 Попробовать снова", callback_data='check_payment')],
+                [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.message.edit_text(
+                "❌ Оплата не найдена. Пожалуйста, подождите несколько минут или проверьте правильность оплаты.",
+                reply_markup=reply_markup
+            )
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -489,7 +595,7 @@ class VPNBot:
     async def create_free_config(self, query):
         user_id = query.from_user.id
         if not self.db.is_admin(user_id):
-            await query.message.reply_text("❌ Доступ запрещен")
+            await query.message.edit_text("❌ Доступ запрещен")
             return
         
         try:
@@ -502,12 +608,12 @@ class VPNBot:
                 caption="✅ Ваш бесплатный конфиг на 30 дней создан!"
             )
         except Exception as e:
-            await query.message.reply_text(f"❌ Ошибка при создании конфига: {str(e)}")
+            await query.message.edit_text(f"❌ Ошибка при создании конфига: {str(e)}")
 
     async def show_stats(self, query):
         user_id = query.from_user.id
         if not self.db.is_admin(user_id):
-            await query.message.reply_text("❌ Доступ запрещен")
+            await query.message.edit_text("❌ Доступ запрещен")
             return
         
         conn = sqlite3.connect(DB_PATH)
@@ -521,8 +627,8 @@ class VPNBot:
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data='admin_back')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.message.reply_text(
-            f"📊 Статистика:\\n👥 Пользователей: {users_count}\\n🔗 Активных подписок: {subs_count}",
+        await query.message.edit_text(
+            f"📊 Статистика:\n👥 Пользователей: {users_count}\n🔗 Активных подписок: {subs_count}",
             reply_markup=reply_markup
         )
 
