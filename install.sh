@@ -204,3 +204,11 @@ echo -e "${BLUE}Статус сервисов:${NC}"
 systemctl status openvpn@server --no-pager -l
 echo ""
 systemctl status coffee-coma-vpn --no-pager -l
+
+# Создаем директорию для скриптов ограничения скорости
+mkdir -p /etc/openvpn/client-speed/
+
+# Добавляем задание cron для очистки просроченных подписок
+(crontab -l 2>/dev/null; echo "0 3 * * * /opt/coffee-coma-vpn/venv/bin/python3 /opt/coffee-coma-vpn/vpn_bot.py --clean") | crontab -
+
+log "Добавлено задание cron для очистки просроченных подписок"
