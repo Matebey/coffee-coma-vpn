@@ -1,15 +1,13 @@
 import os
 import sqlite3
+import requests
 
-# Токен бота от @BotFather
-BOT_TOKEN = "7953514140:AAGg-AgyL6Y2mvzfyKesnpouJkU6p_B8Zeo"
+# Токен бота от @BotFather - ЗАМЕНИТЕ НА СВОЙ!
+BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"
 
-# Настройки ЮMoney
-YOOMONEY_CLIENT_ID = "your_client_id"
-YOOMONEY_REDIRECT_URI = "https://yourdomain.com/callback"
-YOOMONEY_CLIENT_SECRET = "your_client_secret"
-YOOMONEY_ACCESS_TOKEN = "your_access_token"
-YOOMONEY_WALLET = "your_wallet_number"
+# Настройки ЮMoney - ЗАМЕНИТЕ НА СВОИ!
+YOOMONEY_WALLET = "ВАШ_НОМЕР_КОШЕЛЬКА"
+YOOMONEY_SECRET = "ВАШ_СЕКРЕТНЫЙ_КЛЮЧ"
 
 # Настройки OpenVPN
 OVPN_CONFIG_DIR = "/etc/openvpn/server/"
@@ -19,11 +17,38 @@ OVPN_KEYS_DIR = "/etc/openvpn/easy-rsa/pki/"
 # Путь к базе данных
 DB_PATH = "/opt/coffee-coma-vpn/vpn_bot.db"
 
-# Админ пользователи (замените на ваш Telegram ID)
-ADMINS = [5631675412]
+# Админ пользователи - ЗАМЕНИТЕ НА СВОЙ ID!
+ADMINS = [ВАШ_TELEGRAM_ID]
 
 # Создаем директории
 os.makedirs(OVPN_CLIENT_DIR, exist_ok=True)
+
+class YooMoneyAPI:
+    def __init__(self, wallet, secret):
+        self.wallet = wallet
+        self.secret = secret
+        self.base_url = "https://yoomoney.ru/api"
+    
+    def check_payment(self, label, amount):
+        """Проверяет наличие платежа по метке"""
+        try:
+            # Простая проверка через запрос к странице оплаты
+            # В реальном проекте используйте официальное API ЮMoney
+            url = f"https://yoomoney.ru/quickpay/confirm.xml"
+            params = {
+                'receiver': self.wallet,
+                'quickpay-form': 'small',
+                'sum': amount,
+                'label': label,
+                'paymentType': 'AC'
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            return "success" in response.text.lower()
+            
+        except Exception as e:
+            print(f"Ошибка проверки платежа: {e}")
+            return False
 
 # Функция для получения настроек из БД
 def get_setting(key, default=None):
@@ -36,6 +61,9 @@ def get_setting(key, default=None):
         return result[0] if result else default
     except:
         return default
+
+# Инициализация ЮMoney API
+yoomoney_api = YooMoneyAPI(YOOMONEY_WALLET, YOOMONEY_SECRET)
 
 # Динамические настройки
 PRICES = {
