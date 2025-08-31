@@ -42,7 +42,7 @@ apt update && apt upgrade -y
 
 # Установка необходимых пакетов
 log "Установка пакетов..."
-apt install -y openvpn easy-rsa python3 python3-pip python3-venv git sqlite3 curl
+apt install -y openvpn easy-rsa python3 python3-pip python3-venv git sqlite3 curl iptables-persistent
 
 # Создание директории
 log "Создание рабочей директории..."
@@ -53,6 +53,7 @@ cd $INSTALL_DIR
 log "Копирование файлов..."
 cp -f /root/coffee-coma-vpn/*.py $INSTALL_DIR/
 cp -f /root/coffee-coma-vpn/*.sh $INSTALL_DIR/
+cp -f /root/coffee-coma-vpn/requirements.txt $INSTALL_DIR/
 chmod +x $INSTALL_DIR/*.sh
 
 # Настройка OpenVPN
@@ -119,7 +120,6 @@ sysctl -p
 
 # Настраиваем iptables
 iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
-apt install -y iptables-persistent
 iptables-save > /etc/iptables/rules.v4
 
 # Создаем директорию для клиентских конфигов
@@ -130,7 +130,7 @@ log "Настройка Python окружения..."
 cd $INSTALL_DIR
 python3 -m venv venv
 source venv/bin/activate
-pip install python-telegram-bot requests
+pip install -r requirements.txt
 
 # Создаем базу данных
 log "Создание базы данных..."
@@ -192,9 +192,8 @@ echo -e "${GREEN}✅ Telegram бот установлен${NC}"
 echo -e "${GREEN}✅ Systemd service создан${NC}"
 echo -e "${YELLOW}=================================================${NC}"
 echo -e "${BLUE}Следующие шаги:${NC}"
-echo "1. Отредактируйте конфиг: nano /opt/coffee-coma-vpn/config.py"
-echo "2. Укажите ваш Telegram ID и токен бота"
-echo "3. Перезапустите бота: systemctl restart coffee-coma-vpn"
+echo "1. Проверьте статус бота: systemctl status coffee-coma-vpn"
+echo "2. Используйте админ панель: vpn-admin"
 echo -e "${YELLOW}=================================================${NC}"
 echo -e "${GREEN}IP вашего сервера: $SERVER_IP${NC}"
 echo -e "${GREEN}Порт OpenVPN: 1194${NC}"
