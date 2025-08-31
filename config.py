@@ -20,6 +20,12 @@ DB_PATH = "/opt/coffee-coma-vpn/vpn_bot.db"
 # Админ пользователи - ЗАМЕНИТЕ НА СВОЙ ID!
 ADMINS = [ВАШ_TELEGRAM_ID]
 
+# Настройки реферальной программы
+REFERRAL_REWARD_DAYS = 5
+TRIAL_DAYS = 5
+DEFAULT_SPEED_LIMIT = 10
+TRIAL_SPEED_LIMIT = 5
+
 # Создаем директории
 os.makedirs(OVPN_CLIENT_DIR, exist_ok=True)
 
@@ -32,19 +38,14 @@ class YooMoneyAPI:
     def check_payment(self, label, amount):
         """Проверяет наличие платежа по метке"""
         try:
-            # Простая проверка через запрос к странице оплаты
-            # В реальном проекте используйте официальное API ЮMoney
-            url = f"https://yoomoney.ru/quickpay/confirm.xml"
-            params = {
-                'receiver': self.wallet,
-                'quickpay-form': 'small',
-                'sum': amount,
-                'label': label,
-                'paymentType': 'AC'
-            }
+            # В реальной реализации используйте официальное API ЮMoney
+            # Это заглушка для демонстрации
+            import time
+            time.sleep(2)  # Имитация проверки
             
-            response = requests.get(url, params=params, timeout=10)
-            return "success" in response.text.lower()
+            # Для тестирования всегда возвращаем False
+            # В продакшене замените на реальную проверку
+            return False
             
         except Exception as e:
             print(f"Ошибка проверки платежа: {e}")
