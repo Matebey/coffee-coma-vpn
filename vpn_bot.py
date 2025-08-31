@@ -97,41 +97,28 @@ class OpenVPNManager:
 
     def create_client_config(self, client_name):
         try:
-            # Генерация клиентского сертификата
-            result = subprocess.run([
+            subprocess.run([
                 'cd /etc/openvpn/easy-rsa && ./easyrsa gen-req {} nopass'.format(client_name)
             ], shell=True, check=True, capture_output=True, text=True, timeout=30)
             
-            logger.info(f"Generate req output: {result.stdout}")
-            
-            # Автоматическое подписание
-            result = subprocess.run([
+            subprocess.run([
                 'cd /etc/openvpn/easy-rsa && echo "yes" | ./easyrsa sign-req client {}'.format(client_name)
             ], shell=True, check=True, capture_output=True, text=True, timeout=30)
             
-            logger.info(f"Sign req output: {result.stdout}")
-            
         except subprocess.CalledProcessError as e:
-            error_msg = f"OpenVPN error: {e.stderr}\nStdout: {e.stdout}"
-            logger.error(error_msg)
             raise Exception(f"Ошибка создания сертификата: {e.stderr}")
-        except subprocess.TimeoutExpired:
-            raise Exception("Таймаут при создании сертификата")
 
-        # Получаем настройки
-        dns1 = self.db.get_setting('dns1', '8.8.8.8')
-        dns2 = self.db.get_setting('dns2', '8.8.4.4')
-        port = self.db.get_setting('port', '1194')
-        server_ip = subprocess.check_output("curl -s ifconfig.me", shell=True).decode().strip()
-
-        # Проверяем файлы
         cert_path = os.path.join(OVPN_KEYS_DIR, 'issued', f'{client_name}.crt')
         key_path = os.path.join(OVPN_KEYS_DIR, 'private', f'{client_name}.key')
         
         if not os.path.exists(cert_path) or not os.path.exists(key_path):
             raise Exception("Файлы сертификатов не созданы")
 
-        # Создаем конфиг
+        dns1 = self.db.get_setting('dns1', '8.8.8.8')
+        dns2 = self.db.get_setting('dns2', '8.8.4.4')
+        port = self.db.get_setting('port', '1194')
+        server_ip = subprocess.check_output("curl -s ifconfig.me", shell=True).decode().strip()
+
         config_content = f'''client
 dev tun
 proto udp
@@ -166,36 +153,25 @@ key-direction 1
 
     def revoke_client(self, client_name):
         try:
-            # Отзываем сертификат
-            result = subprocess.run([
+            subprocess.run([
                 'cd /etc/openvpn/easy-rsa && echo "yes" | ./easyrsa revoke {}'.format(client_name)
             ], shell=True, check=True, capture_output=True, text=True, timeout=30)
             
-            logger.info(f"Revoke output: {result.stdout}")
-            
-            # Обновляем CRL
-            result = subprocess.run([
+            subprocess.run([
                 'cd /etc/openvpn/easy-rsa && ./easyrsa gen-crl'
             ], shell=True, check=True, capture_output=True, text=True, timeout=30)
             
-            logger.info(f"Gen CRL output: {result.stdout}")
-            
-            # Перезагружаем OpenVPN
-            result = subprocess.run([
+            subprocess.run([
                 'systemctl restart openvpn@server'
             ], shell=True, check=True, capture_output=True, text=True, timeout=30)
             
-            logger.info(f"Restart OpenVPN output: {result.stdout}")
-            
-            # Удаляем конфиг
             config_path = os.path.join(OVPN_CLIENT_DIR, f'{client_name}.ovpn')
             if os.path.exists(config_path):
                 os.remove(config_path)
-            
+                
             return True
             
-        except Exception as e:
-            logger.error(f"Revoke error: {str(e)}")
+        except subprocess.CalledProcessError:
             return False
 
 class VPNBot:
@@ -204,7 +180,6 @@ class VPNBot:
         self.ovpn = OpenVPNManager()
         self.application = Application.builder().token(BOT_TOKEN).build()
         
-        # Регистрация обработчиков
         self.application.add_handler(CommandHandler("start", self.start))
         self.application.add_handler(CommandHandler("buy", self.buy))
         self.application.add_handler(CommandHandler("myconfig", self.my_config))
