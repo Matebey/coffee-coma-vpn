@@ -14,7 +14,7 @@ echo " / /   / __ \/ __  / / / / ___/ /   / __ \/ __ \/ ___// // /| | / /_/ /"
 echo "/ /___/ /_/ / /_/ / /_/ / /__/ /___/ /_/ / / / / /  _/ // ___ |/ ____/"
 echo "\____/\____/\__,_/\__,_/\___/\____/\____/_/ /_/_/  /___/_/  |_/_/"
 echo -e "${NC}"
-echo -e "${BLUE}=== Coffee Coma VPN Reinstall/Update ===${NC}"
+echo -e "${BLUE}=== Coffee Coma VPN Reinstaller ===${NC}"
 
 # Проверка на root
 if [ "$EUID" -ne 0 ]; then
@@ -22,12 +22,8 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Переменные
 INSTALL_DIR="/opt/coffee-coma-vpn"
-BACKUP_DIR="/tmp/vpn_backup"
-SERVICE_FILE="/etc/systemd/system/coffee-coma-vpn.service"
 
-# Функция для вывода сообщений
 log() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
@@ -37,64 +33,21 @@ error() {
     exit 1
 }
 
-# Создаем backup текущих настроек
-log "Создание backup текущих настроек..."
-mkdir -p $BACKUP_DIR
+# Останавливаем сервисы
+log "Остановка сервисов..."
+systemctl stop coffee-coma-vpn
+systemctl stop openvpn@server
 
-# Backup базы данных
-if [ -f "$INSTALL_DIR/vpn_bot.db" ]; then
-    cp $INSTALL_DIR/vpn_bot.db $BACKUP_DIR/
-    log "База данных сохранена в backup"
-fi
-
-# Backup конфига
-if [ -f "$INSTALL_DIR/config.py" ]; then
-    cp $INSTALL_DIR/config.py $BACKUP_DIR/
-    log "Конфиг сохранен в backup"
-fi
-
-# Останавливаем сервис
-log "Остановка сервиса..."
-systemctl stop coffee-coma-vpn 2>/dev/null || true
-
-# Удаляем старую директорию
-log "Удаление старой версии..."
+# Удаляем старую установку
+log "Удаление старой установки..."
 rm -rf $INSTALL_DIR
-
-# Скачиваем свежую версию с GitHub
-log "Скачивание новой версии с GitHub..."
-cd /root
-if [ -d "coffee-coma-vpn" ]; then
-    rm -rf coffee-coma-vpn
-fi
-
-git clone https://github.com/Matebey/coffee-coma-vpn.git
-cd coffee-coma-vpn
+rm -f /etc/systemd/system/coffee-coma-vpn.service
+rm -f /usr/local/bin/vpn-admin
+rm -f /usr/local/bin/vpn-reinstall
+rm -f /usr/local/bin/vpn-update
 
 # Запускаем установку
-log "Запуск установки..."
-chmod +x install.sh
+log "Запуск новой установки..."
 ./install.sh
 
-# Восстанавливаем backup
-log "Восстановление backup..."
-if [ -f "$BACKUP_DIR/config.py" ]; then
-    cp $BACKUP_DIR/config.py $INSTALL_DIR/
-    log "Конфиг восстановлен из backup"
-fi
-
-if [ -f "$BACKUP_DIR/vpn_bot.db" ]; then
-    cp $BACKUP_DIR/vpn_bot.db $INSTALL_DIR/
-    log "База данных восстановлена из backup"
-fi
-
-# Чистим backup
-rm -rf $BACKUP_DIR
-
 log "Переустановка завершена!"
-echo -e "${YELLOW}=================================================${NC}"
-echo -e "${GREEN}✅ Бот обновлен до последней версии${NC}"
-echo -e "${GREEN}✅ Настройки восстановлены из backup${NC}"
-echo -e "${YELLOW}=================================================${NC}"
-echo -e "${BLUE}Статус сервиса:${NC}"
-systemctl status coffee-coma-vpn --no-pager -l
