@@ -2,6 +2,7 @@ import logging
 import sqlite3
 import subprocess
 import os
+import re
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
@@ -35,6 +36,12 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
         self.conn.commit()
 
     def add_user(self, user_id, first_name, username):
@@ -66,21 +73,33 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
         self.conn.commit()
+        return True
+
+    def get_setting(self, key, default=None):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
+        result = cursor.fetchone()
+        return result[0] if result else default
 
 class OpenVPNManager:
     def create_client_config(self, client_name):
         # Генерация клиентского сертификата
-        subprocess.run([
-            'cd /etc/openvpn/easy-rsa/ && ./easyrsa gen-req {} nopass'.format(client_name),
-        ], shell=True, check=True)
-        
-        subprocess.run([
-            'cd /etc/openvpn/easy-rsa/ && echo "yes" | ./easyrsa sign-req client {}'.format(client_name),
-        ], shell=True, check=True)
+        try:
+            subprocess.run([
+                'cd /etc/openvpn/easy-rsa/ && ./easyrsa gen-req {} nopass'.format(client_name),
+            ], shell=True, check=True, capture_output=True)
+            
+            subprocess.run([
+                'cd /etc/openvpn/easy-rsa/ && echo "yes" | ./easyrsa sign-req client {}'.format(client_name),
+            ], shell=True, check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"OpenVPN error: {e.stderr}")
+            raise
 
         # Получаем текущие настройки
-        dns1, dns2 = DNS_SERVERS
-        port = OVPN_PORT
+        dns1 = self.db.get_setting('dns1', '8.8.8.8')
+        dns2 = self.db.get_setting('dns2', '8.8.4.4')
+        port = self.db.get_setting('port', '1194')
         server_ip = subprocess.check_output("curl -s ifconfig.me", shell=True).decode().strip()
 
         # Создание конфигурационного файла
@@ -116,18 +135,25 @@ key-direction 1
         
         return config_path
 
+    def __init__(self):
+        self.db = Database()
+
 class VPNBot:
     def __init__(self):
         self.db = Database()
         self.ovpn = OpenVPNManager()
         self.application = Application.builder().token(BOT_TOKEN).build()
         
+        # Регистрация обработчиков
         self.application.add_handler(CommandHandler("start", self.start))
         self.application.add_handler(CommandHandler("buy", self.buy))
         self.application.add_handler(CommandHandler("myconfig", self.my_config))
         self.application.add_handler(CommandHandler("admin", self.admin_panel))
         self.application.add_handler(CommandHandler("settings", self.settings_panel))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
+        
+        # Обработчик текстовых сообщений для настроек
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
@@ -137,6 +163,10 @@ class VPNBot:
             [InlineKeyboardButton("🛒 Купить доступ (50 руб/месяц)", callback_data='buy')],
             [InlineKeyboardButton("📁 Мой конфиг", callback_data='myconfig')]
         ]
+        
+        if self.db.is_admin(user.id):
+            keyboard.append([InlineKeyboardButton("👨‍💻 Админ панель", callback_data='admin_panel')])
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_html(
@@ -148,13 +178,14 @@ class VPNBot:
 
     async def buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        payment_url = "https://yoomoney.ru/quickpay/confirm.xml?receiver=ВАШ_НОМЕР_КОШЕЛЬКА&quickpay-form=small&sum=50&label=vpn_{}&paymentType=AC".format(user.id)
+        price = self.db.get_setting('price', 50)
+        payment_url = f"https://yoomoney.ru/quickpay/confirm.xml?receiver=ВАШ_НОМЕР_КОШЕЛЬКА&quickpay-form=small&sum={price}&label=vpn_{user.id}&paymentType=AC"
         
-        keyboard = [[InlineKeyboardButton("💳 Оплатить 50 руб", url=payment_url)]]
+        keyboard = [[InlineKeyboardButton(f"💳 Оплатить {price} руб", url=payment_url)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "Оплатите 50 рублей за доступ на 1 месяц\\n\\n"
+            f"Оплатите {price} рублей за доступ на 1 месяц\\n\\n"
             "После оплаты нажмите /checkpayment для проверки",
             reply_markup=reply_markup
         )
@@ -192,24 +223,43 @@ class VPNBot:
             await update.message.reply_text("❌ Доступ запрещен")
             return
         
+        # Получаем текущие настройки
+        dns1 = self.db.get_setting('dns1', '8.8.8.8')
+        dns2 = self.db.get_setting('dns2', '8.8.4.4')
+        port = self.db.get_setting('port', '1194')
+        price = self.db.get_setting('price', '50')
+        
         keyboard = [
-            [InlineKeyboardButton("🌐 Изменить DNS", callback_data='change_dns')],
-            [InlineKeyboardButton("🔌 Изменить порт", callback_data='change_port')],
-            [InlineKeyboardButton("💰 Изменить цену", callback_data='change_price')],
+            [InlineKeyboardButton(f"🌐 DNS: {dns1} {dns2}", callback_data='change_dns')],
+            [InlineKeyboardButton(f"🔌 Порт: {port}", callback_data='change_port')],
+            [InlineKeyboardButton(f"💰 Цена: {price} руб", callback_data='change_price')],
             [InlineKeyboardButton("🔙 Назад", callback_data='admin_back')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text("⚙️ Настройки сервера:", reply_markup=reply_markup)
+        message = "⚙️ <b>Текущие настройки сервера:</b>\n\n"
+        message += f"🌐 <b>DNS серверы:</b> {dns1}, {dns2}\n"
+        message += f"🔌 <b>Порт OpenVPN:</b> {port}\n"
+        message += f"💰 <b>Цена подписки:</b> {price} руб\n\n"
+        message += "Выберите параметр для изменения:"
+        
+        await update.message.reply_html(message, reply_markup=reply_markup)
 
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         
+        user_id = query.from_user.id
+        if not self.db.is_admin(user_id):
+            await query.message.reply_text("❌ Доступ запрещен")
+            return
+        
         if query.data == 'buy':
             await self.buy(update, context)
         elif query.data == 'myconfig':
             await self.my_config(update, context)
+        elif query.data == 'admin_panel':
+            await self.admin_panel(update, context)
         elif query.data == 'admin_free':
             await self.create_free_config(query)
         elif query.data == 'admin_settings':
@@ -217,16 +267,75 @@ class VPNBot:
         elif query.data == 'admin_stats':
             await self.show_stats(query)
         elif query.data == 'change_dns':
-            await query.message.reply_text("Введите новые DNS серверы через пробел (например: 1.1.1.1 1.0.0.1):")
-            context.user_data['awaiting_dns'] = True
+            context.user_data['awaiting_input'] = 'dns'
+            await query.message.reply_text("Введите новые DNS серверы через пробел (например: <code>1.1.1.1 1.0.0.1</code>):", parse_mode='HTML')
         elif query.data == 'change_port':
-            await query.message.reply_text("Введите новый порт для OpenVPN:")
-            context.user_data['awaiting_port'] = True
+            context.user_data['awaiting_input'] = 'port'
+            await query.message.reply_text("Введите новый порт для OpenVPN (например: <code>443</code>):", parse_mode='HTML')
         elif query.data == 'change_price':
-            await query.message.reply_text("Введите новую цену подписки:")
-            context.user_data['awaiting_price'] = True
+            context.user_data['awaiting_input'] = 'price'
+            await query.message.reply_text("Введите новую цену подписки в рублях (например: <code>100</code>):", parse_mode='HTML')
         elif query.data == 'admin_back':
             await self.admin_panel(update, context)
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        text = update.message.text
+        
+        if not self.db.is_admin(user_id):
+            await update.message.reply_text("❌ Доступ запрещен")
+            return
+        
+        if 'awaiting_input' not in context.user_data:
+            return
+        
+        input_type = context.user_data['awaiting_input']
+        
+        try:
+            if input_type == 'dns':
+                # Проверяем формат DNS
+                dns_servers = text.split()
+                if len(dns_servers) != 2:
+                    await update.message.reply_text("❌ Неверный формат. Введите 2 DNS сервера через пробел.")
+                    return
+                
+                # Проверяем что это IP адреса
+                ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
+                if not re.match(ip_pattern, dns_servers[0]) or not re.match(ip_pattern, dns_servers[1]):
+                    await update.message.reply_text("❌ Неверный формат IP адресов.")
+                    return
+                
+                self.db.update_setting('dns1', dns_servers[0])
+                self.db.update_setting('dns2', dns_servers[1])
+                await update.message.reply_text(f"✅ DNS серверы изменены: {dns_servers[0]}, {dns_servers[1]}")
+                
+            elif input_type == 'port':
+                # Проверяем что порт число от 1 до 65535
+                if not text.isdigit() or not (1 <= int(text) <= 65535):
+                    await update.message.reply_text("❌ Неверный порт. Должен быть число от 1 до 65535.")
+                    return
+                
+                self.db.update_setting('port', text)
+                await update.message.reply_text(f"✅ Порт изменен: {text}")
+                
+            elif input_type == 'price':
+                # Проверяем что цена число
+                if not text.isdigit() or int(text) <= 0:
+                    await update.message.reply_text("❌ Неверная цена. Должно быть положительное число.")
+                    return
+                
+                self.db.update_setting('price', text)
+                await update.message.reply_text(f"✅ Цена изменена: {text} руб")
+            
+            # Очищаем состояние ожидания
+            del context.user_data['awaiting_input']
+            
+            # Показываем обновленные настройки
+            await self.settings_panel(update, context)
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+            del context.user_data['awaiting_input']
 
     async def create_free_config(self, query):
         user_id = query.from_user.id
@@ -234,14 +343,17 @@ class VPNBot:
             await query.message.reply_text("❌ Доступ запрещен")
             return
         
-        client_name = f"admin_{user_id}_{int(datetime.now().timestamp())}"
-        config_path = self.ovpn.create_client_config(client_name)
-        self.db.add_subscription(user_id, client_name, config_path, 30)
-        
-        await query.message.reply_document(
-            document=open(config_path, 'rb'),
-            caption="✅ Ваш бесплатный конфиг на 30 дней создан!"
-        )
+        try:
+            client_name = f"admin_{user_id}_{int(datetime.now().timestamp())}"
+            config_path = self.ovpn.create_client_config(client_name)
+            self.db.add_subscription(user_id, client_name, config_path, 30)
+            
+            await query.message.reply_document(
+                document=open(config_path, 'rb'),
+                caption="✅ Ваш бесплатный конфиг на 30 дней создан!"
+            )
+        except Exception as e:
+            await query.message.reply_text(f"❌ Ошибка при создании конфига: {str(e)}")
 
     async def show_stats(self, query):
         user_id = query.from_user.id
