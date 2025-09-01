@@ -152,17 +152,74 @@ class OpenVPNManager:
     def create_client_config(self, client_name, speed_limit=10):
         try:
             # Создаем сертификаты
-            subprocess.run(['/bin/bash', '-c', f'cd /etc/openvpn/easy-rsa && ./easyrsa --batch gen-req {client_name} nopass'], check=True, timeout=60)
-            subprocess.run(['/bin/bash', '-c', f'cd /etc/openvpn/easy-rsa && echo "yes" | ./easyrsa --batch sign-req client {client_name}'], check=True, timeout=60)
+            subprocess.run([
+                '/bin/bash', '-c', 
+                f'cd /etc/openvpn/easy-rsa && ./easyrsa --batch gen-req {client_name} nopass'
+            ], check=True, timeout=60, capture_output=True)
+            
+            subprocess.run([
+                '/bin/bash', '-c', 
+                f'cd /etc/openvpn/easy-rsa && echo "yes" | ./easyrsa --batch sign-req client {client_name}'
+            ], check=True, timeout=60, capture_output=True)
+            
+            # ПРАВИЛЬНЫЕ ПУТИ К ФАЙЛАМ:
+            ca_cert_path = "/etc/openvpn/ca.crt"
+            ta_key_path = "/etc/openvpn/ta.key"
+            client_cert_path = f"/etc/openvpn/easy-rsa/pki/issued/{client_name}.crt"
+            client_key_path = f"/etc/openvpn/easy-rsa/pki/private/{client_name}.key"
+            
+            # Проверяем существование файлов
+            for file_path in [ca_cert_path, ta_key_path, client_cert_path, client_key_path]:
+                if not os.path.exists(file_path):
+                    raise Exception(f"Файл не найден: {file_path}")
             
             # Читаем файлы
-            with open('/etc/openvpn/ca.crt', 'r') as f: ca_cert = f.read()
-            with open(f'/etc/openvpn/easy-rsa/pki/issued/{client_name}.crt', 'r') as f: client_cert = f.read()
-            with open(f'/etc/openvpn/easy-rsa/pki/private/{client_name}.key', 'r') as f: client_key = f.read()
-            with open('/etc/openvpn/ta.key', 'r') as f: ta_key = f.read()
+            with open(ca_cert_path, 'r') as f: 
+                ca_cert = f.read()
+            with open(client_cert_path, 'r') as f: 
+                client_cert = f.read()
+            with open(client_key_path, 'r') as f: 
+                client_key = f.read()
+            with open(ta_key_path, 'r') as f: 
+                ta_key = f.read()
 
             # Создаем конфиг
             config_content = f'''client
+dev tun
+proto udp
+remote {SERVER_IP} 1194
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-CBC
+verb 3
+<ca>
+{ca_cert}
+</ca>
+<cert>
+{client_cert}
+</cert>
+<key>
+{client_key}
+</key>
+<tls-auth>
+{ta_key}
+</tls-auth>
+key-direction 1
+'''
+
+            config_path = f"{OVPN_CLIENT_DIR}{client_name}.ovpn"
+            with open(config_path, 'w') as f:
+                f.write(config_content)
+            
+            return config_path
+            
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"Ошибка создания сертификата: {e.stderr.decode()}")
+        except Exception as e:
+            raise Exception(f"Ошибка создания конфига: {str(e)}")
 dev tun
 proto udp
 remote {SERVER_IP} 1194
@@ -304,4 +361,5 @@ class VPNBot:
 
 if __name__ == "__main__":
     bot = VPNBot()
+
     bot.run()
