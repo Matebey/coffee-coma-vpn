@@ -13,167 +13,137 @@ DB_PATH="$INSTALL_DIR/vpn_bot.db"
 show_menu() {
     echo -e "${GREEN}"
     echo "   ______          __           ______                 ________    ____"
-    echo "  / ____/___  ____/ /_  _______/ ____/___  ____  _____/ 极/   |  / __ \\"
+    echo "  / ____/___  ____/ /_  _______/ ____/___  ____  _____/  _/   |  / __ \\"
     echo " / /   / __ \/ __  / / / / ___/ /   / __ \/ __ \/ ___// // /| | / /_/ /"
-    echo "/ /___/ /_/ / /_/ / /_/ / /__/ /___/ /_/ / / / / /  _极// ___ |/ ____/"
+    echo "/ /___/ /_/ / /_/ / /_/ / /__/ /___/ /_/ / / / / /  _/ // ___ |/ ____/"
     echo "\____/\____/\__,_/\__,_/\___/\____/\____/_/ /_/_/  /___/_/  |_/_/"
     echo -e "${NC}"
     echo -e "${BLUE}=== Coffee Coma VPN Admin Panel ===${NC}"
+    echo ""
     echo "1. 📊 Показать статистику"
     echo "2. 👥 Список пользователей"
-    echo "3. 🔑 Управление ключами"
-    echo "4. ⚙️  Настройки сервера"
-    echo "5. 💳 Настройки ЮMoney"
-    echo "6. 🔄 Перезапустить бота"
-    echo "7. 🧹 Очистить просроченные подписки"
-    echo "8. 🚪 Выход"
-    echo -n "Выберите опцию: "
+    echo "3. 🔧 Управление подписками"
+    echo "4. ⚙️  Настройки системы"
+    echo "5. 🔄 Перезапустить сервисы"
+    echo "6. 📝 Редактировать конфиг"
+    echo "7. 🚪 Выход"
+    echo ""
 }
 
 show_stats() {
     echo -e "${YELLOW}📊 Статистика системы:${NC}"
-    users_count=$(sqlite3 $DB_PATH "SELECT COUNT(*) FROM users;")
-    subs_count=$(sqlite3 $DB_PATH "SELECT COUNT(*) FROM subscriptions;")
-    active_subs=$(sqlite3 $DB_PATH "SELECT COUNT(*) FROM subscriptions WHERE end_date > datetime('now');")
+    sqlite3 $DB_PATH "SELECT COUNT(*) FROM users" | read total_users
+    sqlite3 $DB_PATH "SELECT COUNT(*) FROM subscriptions WHERE end_date > datetime('now')" | read active_subs
+    sqlite3 $DB_PATH "SELECT COUNT(*) FROM referrals" | read total_refs
     
-    echo -e "👥 Всего пользователей: ${GREEN}$users_count${NC}"
-    echo -e "🔗 Всего подписок: ${GREEN}$subs_count${NC}"
-    echo -e "✅ Активных подписок: ${GREEN}$active_subs${NC}"
+    echo "• Всего пользователей: $total_users"
+    echo "• Активных подписок: $active_subs"
+    echo "• Всего рефералов: $total_refs"
+    echo ""
     
-    # Показываем использование диска
-    echo -e "💾 Использование диска:"
-    du -sh $INSTALL_DIR
+    # Информация о системе
+    echo -e "${YELLOW}💻 Загрузка системы:${NC}"
+    echo "• Load average: $(uptime | awk -F'load average:' '{print $2}')"
+    echo "• Диск: $(df -h / | awk 'NR==2{print $5}')"
+    echo "• Память: $(free -h | awk 'NR==2{print $3"/"$2}')"
     echo ""
 }
 
-list_users() {
-    echo -e "${YELLOW}👥 Список пользователей:${NC}"
-    sqlite3 -header -column $DB_PATH "SELECT user_id, username, first_name, registration_date FROM users ORDER BY registration_date DESC LIMIT 10;"
+show_users() {
+    echo -e "${YELLOW}👥 Последние пользователи:${NC}"
+    sqlite3 -header -column $DB_PATH "
+        SELECT user_id, first_name, username, registration_date 
+        FROM users 
+        ORDER BY registration_date DESC 
+        LIMIT 10
+    "
     echo ""
 }
 
-manage_keys() {
-    echo -e "${YELLOW}🔑 Управление ключами:${NC}"
-    sqlite3 -header -column $DB_PATH "SELECT client_name, user_id, start_date, end_date FROM subscriptions ORDER BY end_date DESC;"
-    
-    echo -n "Введите имя ключа для отзыва (или 'назад'): "
-    read key_name
-    
-    if [ "$key_name" == "назад" ]; then
-        return
-    fi
-    
-    # Отзыв ключа
-    cd /etc/openvpn/easy-rsa/
-    echo "yes" | ./easyrsa revoke $key_name
-    ./easyrsa gen-crl
-    systemctl restart openvpn@server
-    
-    # Удаляем из базы
-    sqlite3 $DB_PATH "DELETE FROM subscriptions WHERE client_name='$key_name';"
-    
-    echo -e "${GREEN}✅ Ключ $key_name отозван и удален!${NC}"
+manage_subscriptions() {
+    echo -e "${YELLOW}🔧 Активные подписки:${NC}"
+    sqlite3 -header -column $DB_PATH "
+        SELECT u.user_id, u.first_name, s.client_name, s.end_date, s.speed_limit
+        FROM subscriptions s
+        JOIN users u ON s.user_id = u.user_id
+        WHERE s.end_date > datetime('now')
+        ORDER BY s.end_date DESC
+        LIMIT 10
+    "
     echo ""
 }
 
-server_settings() {
-    echo -e "${YELLOW}⚙️  Настройки сервера:${NC}"
-    sqlite3 -header -column $DB_PATH "SELECT * FROM settings WHERE key IN ('dns1', 'dns2', 'port', 'price', 'speed_limit');"
+system_settings() {
+    echo -e "${YELLOW}⚙️ Текущие настройки:${NC}"
+    sqlite3 -header -column $DB_PATH "SELECT * FROM settings"
+    echo ""
     
-    echo "1. Изменить DNS"
-    echo "2. Изменить порт"
-    echo "3. Изменить цену"
-    echo "4. Изменить скорость"
-    echo "5. Назад"
-    echo -n "Выберите опцию: "
-    read option
+    echo -e "${YELLOW}🛠 Изменить настройку:${NC}"
+    echo "1. Изменить цену подписки"
+    echo "2. Изменить лимит скорости"
+    echo "3. Изменить DNS серверы"
+    echo "4. Назад"
+    echo ""
     
-    case $option in
+    read -p "Выберите действие: " setting_choice
+    
+    case $setting_choice in
         1)
-            echo -n "Введите primary DNS: "
-            read dns1
-            echo -n "Введите secondary DNS: "
-            read dns2
-            sqlite3 $DB_PATH "UPDATE settings SET value='$dns1' WHERE key='dns1';"
-            sqlite3 $DB_PATH "UPDATE settings SET value='$dns2' WHERE key='dns2';"
-            echo -e "${GREEN}✅ DNS серверы обновлены!${NC}"
+            read -p "Новая цена (руб): " new_price
+            sqlite3 $DB_PATH "UPDATE settings SET value='$new_price' WHERE key='price'"
+            echo "✅ Цена обновлена"
             ;;
         2)
-            echo -n "Введите новый порт: "
-            read port
-            sqlite3 $DB_PATH "UPDATE settings SET value='$port' WHERE key='port';"
-            echo -e "${GREEN}✅ Порт обновлен!${NC}"
+            read -p "Новый лимит скорости (Мбит/с): " new_speed
+            sqlite3 $DB_PATH "UPDATE settings SET value='$new_speed' WHERE key='speed_limit'"
+            echo "✅ Лимит скорости обновлен"
             ;;
         3)
-            echo -n "Введите новую цену: "
-            read price
-            sqlite3 $DB_PATH "UPDATE settings SET value='$price' WHERE key='price';"
-            echo -e "${GREEN}✅ Цена обновлена!${NC}"
-            ;;
-        4)
-            echo -n "Введите новую скорость: "
-            read speed
-            sqlite3 $DB_PATH "UPDATE settings SET value='$speed' WHERE key='speed_limit';"
-            echo -e "${GREEN}✅ Скорость обновлена!${NC}"
+            read -p "DNS 1: " dns1
+            read -p "DNS 2: " dns2
+            sqlite3 $DB_PATH "UPDATE settings SET value='$dns1' WHERE key='dns1'"
+            sqlite3 $DB_PATH "UPDATE settings SET value='$dns2' WHERE key='dns2'"
+            echo "✅ DNS серверы обновлены"
             ;;
     esac
+}
+
+restart_services() {
+    echo -e "${YELLOW}🔄 Перезапуск сервисов...${NC}"
+    systemctl restart openvpn@server
+    systemctl restart coffee-coma-vpn
+    echo "✅ Сервисы перезапущены"
     echo ""
 }
 
-yoomoney_settings() {
-    echo -e "${YELLOW}💳 Настройки ЮMoney:${NC}"
-    sqlite3 -header -column $DB_PATH "SELECT * FROM settings WHERE key IN ('yoomoney_wallet', 'yoomoney_token');"
-    
-    echo "1. Изменить кошелек"
-    echo "2. Изменить токен"
-    echo "3. Назад"
-    echo -n "Выберите опцию: "
-    read option
-    
-    case $option in
-        1)
-            echo -n "Введите номер кошелька ЮMoney: "
-            read wallet
-            sqlite3 $DB_PATH "UPDATE settings SET value='$wallet' WHERE key='yoomoney_wallet';"
-            echo -e "${GREEN}✅ Кошелек обновлен!${NC}"
-            ;;
-        2)
-            echo -n "Введите токен доступа ЮMoney: "
-            read token
-            sqlite3 $DB_PATH "UPDATE settings SET value='$token' WHERE key='yoomoney_token';"
-            echo -e "${GREEN}✅ Токен обновлен!${NC}"
-            ;;
-    esac
+edit_config() {
+    nano $INSTALL_DIR/config.py
+    echo "✅ Конфиг обновлен. Перезапустите бота для применения изменений."
     echo ""
 }
 
-cleanup_expired() {
-    echo -e "${YELLOW}🧹 Очистка просроченных подписок:${NC}"
-    cd $INSTALL_DIR
-    python3 cleanup.py
-    echo ""
-}
-
+# Основной цикл
 while true; do
     show_menu
-    read choice
+    read -p "Выберите действие: " choice
     
     case $choice in
         1) show_stats ;;
-        2) list_users ;;
-        3) manage_keys ;;
-        4) server_settings ;;
-        5) yoomoney_settings ;;
-        6)
-            systemctl restart coffee-coma-vpn
-            echo -e "${GREEN}✅ Бот перезапущен!${NC}"
+        2) show_users ;;
+        3) manage_subscriptions ;;
+        4) system_settings ;;
+        5) restart_services ;;
+        6) edit_config ;;
+        7) 
+            echo -e "${GREEN}До свидания!${NC}"
+            exit 0
             ;;
-        7) cleanup_expired ;;
-        8) exit 0 ;;
-        *) echo -e "${RED}Неверный выбор!${NC}" ;;
+        *)
+            echo -e "${RED}Неверный выбор${NC}"
+            ;;
     esac
     
-    echo -n "Нажмите Enter для продолжения..."
-    read
+    echo ""
+    read -p "Нажмите Enter для продолжения..."
     clear
 done
