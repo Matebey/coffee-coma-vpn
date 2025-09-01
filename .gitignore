@@ -1,0 +1,25 @@
+# Virtual environment
+venv/
+.env
+
+# Database
+*.db
+*.sqlite3
+
+# OpenVPN keys
+*.key
+*.crt
+*.pem
+
+# Logs
+*.log
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# System
+.DS_Store
+Thumbs.db
