@@ -473,7 +473,7 @@ class VPNBot:
                 f"• 1 месяц - {price} рублей\n"
                 f"• Скорость: {self.db.get_setting('speed_limit', 10)} Мбит/с\n"
                 f"• Безлимитный трафик\n\n"
-                f"Выберите способ оплаты:",
+                f"Выберите способ оплата:",
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
@@ -562,16 +562,23 @@ class VPNBot:
                 return
             
             client_name = f"trial_{user_id}_{int(datetime.now().timestamp())}"
-            config_path = self.ovpn.create_client_config(client_name, TRIAL_SPEED_LIMIT)
-            self.db.add_subscription(user_id, client_name, config_path, TRIAL_DAYS, TRIAL_SPEED_LIMIT, True)
+            speed_limit = TRIAL_SPEED_LIMIT
             
-            await update.message.reply_document(
-                document=open(config_path, 'rb'),
-                caption=f"🎉 Пробный период активирован на {TRIAL_DAYS} дней!\n"
-                       f"⚡ Скорость: {TRIAL_SPEED_LIMIT} Мбит/с\n\n"
-                       "💡 После окончания пробного периода вы можете приобрести полный доступ."
-            )
-            
+            try:
+                config_path = self.ovpn.create_client_config(client_name, speed_limit)
+                self.db.add_subscription(user_id, client_name, config_path, TRIAL_DAYS, speed_limit, True)
+                
+                await update.message.reply_document(
+                    document=open(config_path, 'rb'),
+                    caption=f"🎉 Пробный период активирован на {TRIAL_DAYS} дней!\n"
+                           f"⚡ Скорость: {speed_limit} Мбит/с\n"
+                           f"🌐 Сервер: {SERVER_IP}\n\n"
+                           "💡 После окончания пробного периода вы можете приобрести полный доступ."
+                )
+            except Exception as e:
+                logger.error(f"Ошибка создания trial конфига: {e}")
+                await update.message.reply_text(f"❌ Ошибка при создании пробного конфига: {str(e)}")
+                
         except Exception as e:
             logger.error(f"Ошибка в команде /trial: {e}")
             await update.message.reply_text("❌ Ошибка при активации пробного периода.")
@@ -815,7 +822,8 @@ class VPNBot:
                 
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
-                await update.callback_query.message.reply_text(
+                await update.callback_query.message.reply_text
+                                await update.callback_query.message.reply_text(
                     "⚙️ *Настройки системы*\n\n"
                     "Выберите параметр для изменения:",
                     reply_markup=reply_markup,
@@ -828,67 +836,113 @@ class VPNBot:
                 message_text = "🔧 *Активные подписки*\n\n"
                 for sub in subscriptions:
                     days_left = (datetime.strptime(sub[3], '%Y-%m-%d %H:%M:%S') - datetime.now()).days
-                    message_text += f"• {sub[5]} - {sub[1]}\n"
-                    message_text += f"  Осталось: {days_left} дней, Скорость: {sub[4]} Мбит/с\n"
-                    message_text += f"  Конфиг: {sub[2]}\n\n"
+                    message_text += f"• {sub[5]} (@{sub[0]})\n"
+                    message_text += f"  Конфиг: {sub[1]}\n"
+                    message_text += f"  До: {sub[3].split()[0]} ({days_left} дней)\n"
+                    message_text += f"  Скорость: {sub[4]} Мбит/с\n\n"
                 
                 if not subscriptions:
-                    message_text += "Нет активных подписок"
+                    message_text += "❌ Нет активных подписок"
                 
-                await update.callback_query.message.reply_text(message_text, parse_mode='Markdown')
+                keyboard = [
+                    [InlineKeyboardButton("🗑️ Удалить подписку", callback_data='admin_delete_sub')],
+                    [InlineKeyboardButton("🔙 Назад", callback_data='admin_panel')]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.callback_query.message.reply_text(
+                    message_text[:4000],  # Ограничение длины сообщения
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
                 
             elif action == 'admin_restart':
                 try:
-                    subprocess.run(['systemctl', 'restart', 'openvpn@server'], timeout=30)
-                    subprocess.run(['systemctl', 'restart', 'coffee-coma-vpn'], timeout=30)
+                    result = subprocess.run(['systemctl', 'restart', 'openvpn@server'], 
+                                          capture_output=True, text=True, timeout=30)
                     
-                    await update.callback_query.message.reply_text(
-                        "✅ Сервисы успешно перезапущены!\n\n"
-                        "• OpenVPN сервер\n"
-                        "• Telegram бот"
-                    )
+                    if result.returncode == 0:
+                        await update.callback_query.message.reply_text("✅ OpenVPN сервис перезапущен успешно!")
+                    else:
+                        await update.callback_query.message.reply_text(f"❌ Ошибка перезапуска: {result.stderr}")
+                        
                 except Exception as e:
-                    await update.callback_query.message.reply_text(f"❌ Ошибка при перезапуске: {str(e)}")
+                    await update.callback_query.message.reply_text(f"❌ Ошибка: {str(e)}")
                     
+            elif action == 'admin_delete_sub':
+                await update.callback_query.message.reply_text(
+                    "Введите имя конфига для удаления (например: user_12345_1681234567):"
+                )
+                context.user_data['awaiting_sub_delete'] = True
+                
+            elif action.startswith('setting_'):
+                setting_type = action.replace('setting_', '')
+                setting_value = self.db.get_setting(setting_type)
+                
+                await update.callback_query.message.reply_text(
+                    f"Текущее значение {setting_type}: {setting_value}\n\n"
+                    f"Введите новое значение:"
+                )
+                context.user_data['awaiting_setting'] = setting_type
+                
         except Exception as e:
-            logger.error(f"Ошибка в админ-панели: {e}")
-            await update.callback_query.message.reply_text("❌ Ошибка при выполнении действия.")
+            logger.error(f"Ошибка в админ-действии {action}: {e}")
+            await update.callback_query.message.reply_text(f"❌ Ошибка: {str(e)}")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка текстовых сообщений для админ-панели"""
-        user_id = update.effective_user.id
-        message_text = update.message.text
-        
-        if not self.db.is_admin(user_id):
-            return
+        try:
+            user_id = update.effective_user.id
+            text = update.message.text
             
-        # Здесь можно добавить логику для изменения настроек через сообщения
-        # Например: "/set price 100" - установить цену 100 рублей
-        
-        if message_text.startswith('/set '):
-            parts = message_text.split()
-            if len(parts) >= 3:
-                setting_key = parts[1]
-                setting_value = ' '.join(parts[2:])
+            if 'awaiting_setting' in context.user_data:
+                if not self.db.is_admin(user_id):
+                    await update.message.reply_text("❌ У вас нет прав для изменения настроек.")
+                    return
+                    
+                setting_key = context.user_data['awaiting_setting']
+                self.db.update_setting(setting_key, text)
+                del context.user_data['awaiting_setting']
                 
-                if setting_key in ['price', 'speed_limit', 'port', 'dns1', 'dns2', 
-                                 'yoomoney_wallet', 'cloudtips_token']:
-                    self.db.update_setting(setting_key, setting_value)
-                    await update.message.reply_text(f"✅ Настройка '{setting_key}' обновлена на '{setting_value}'")
+                await update.message.reply_text(f"✅ Настройка '{setting_key}' обновлена на: {text}")
+                return
+                
+            if 'awaiting_sub_delete' in context.user_data:
+                if not self.db.is_admin(user_id):
+                    await update.message.reply_text("❌ У вас нет прав для удаления подписок.")
+                    return
+                    
+                client_name = text.strip()
+                if self.db.delete_subscription(client_name) and self.ovpn.revoke_client(client_name):
+                    await update.message.reply_text(f"✅ Подписка '{client_name}' удалена успешно!")
                 else:
-                    await update.message.reply_text("❌ Неизвестная настройка")
-            else:
-                await update.message.reply_text("❌ Неправильный формат команды. Используйте: /set ключ значение")
+                    await update.message.reply_text(f"❌ Ошибка удаления подписки '{client_name}'")
+                
+                del context.user_data['awaiting_sub_delete']
+                return
+                
+            # Обработка других текстовых сообщений
+            await update.message.reply_text(
+                "Не понимаю ваше сообщение. Используйте команды из меню.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 Главное меню", callback_data='main_menu')]
+                ])
+            )
+            
+        except Exception as e:
+            logger.error(f"Ошибка обработки сообщения: {e}")
+            await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
     def run(self):
         """Запуск бота"""
-        logger.info("Запуск бота...")
-        self.application.run_polling()
+        try:
+            logger.info("Запуск бота...")
+            self.application.run_polling()
+        except Exception as e:
+            logger.error(f"Ошибка запуска бота: {e}")
+        finally:
+            self.db.conn.close()
 
+# Запуск бота
 if __name__ == "__main__":
-    try:
-        bot = VPNBot()
-        bot.run()
-    except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-        print(f"Критическая ошибка: {e}")
+    bot = VPNBot()
+    bot.run()
