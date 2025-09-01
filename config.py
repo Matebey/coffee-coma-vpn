@@ -1,11 +1,11 @@
 import os
 import sqlite3
 
-# Токен бота от @BotFather - ЗАМЕНИТЕ НА СВОЙ!
-BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"
+# Токен бота от @BotFather
+BOT_TOKEN = "7953514140:AAGg-AgyL6Y2mvzfyKesnpouJkU6p_B8Zeo"
 
-# Админ пользователи - ЗАМЕНИТЕ НА СВОЙ ID!
-ADMINS = [ВАШ_TELEGRAM_ID]
+# Админ пользователи
+ADMINS = [5631675412]
 
 # Пути
 OVPN_KEYS_DIR = "/etc/openvpn/easy-rsa/pki/"
