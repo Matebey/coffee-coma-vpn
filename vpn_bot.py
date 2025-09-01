@@ -1,0 +1,307 @@
+import logging
+import sqlite3
+import subprocess
+import os
+import re
+import secrets
+import string
+import time
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+
+# Попробуем импортировать config
+try:
+    from config import BOT_TOKEN, ADMINS, OVPN_CLIENT_DIR, DB_PATH, REFERRAL_REWARD_DAYS, TRIAL_DAYS, DEFAULT_SPEED_LIMIT, TRIAL_SPEED_LIMIT, SERVER_IP, cloudtips_api
+except ImportError:
+    # Значения по умолчанию
+    BOT_TOKEN = "7953514140:AAGg-AgyL6Y2mvzfyKesnpouJkU6p_B8Zeo"
+    ADMINS = [5631675412]
+    OVPN_CLIENT_DIR = "/etc/openvpn/client-configs/"
+    DB_PATH = "/opt/coffee-coma-vpn/vpn_bot.db"
+    REFERRAL_REWARD_DAYS = 7
+    TRIAL_DAYS = 7
+    DEFAULT_SPEED_LIMIT = 10
+    TRIAL_SPEED_LIMIT = 5
+    SERVER_IP = "77.239.105.17"
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+class Database:
+    def __init__(self):
+        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        self.create_tables()
+        self.clean_expired_subscriptions()
+
+    def create_tables(self):
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                referral_code TEXT UNIQUE,
+                referred_by INTEGER,
+                trial_used INTEGER DEFAULT 0
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                client_name TEXT UNIQUE,
+                config_path TEXT,
+                start_date TIMESTAMP,
+                end_date TIMESTAMP,
+                speed_limit INTEGER DEFAULT 10,
+                is_trial INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS referrals (
+                referral_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_id INTEGER,
+                referred_id INTEGER,
+                reward_claimed INTEGER DEFAULT 0,
+                date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (referrer_id) REFERENCES users (user_id),
+                FOREIGN KEY (referred_id) REFERENCES users (user_id)
+            )
+        ''')
+        self.conn.commit()
+
+    def add_user(self, user_id, first_name, username, referred_by=None):
+        try:
+            cursor = self.conn.cursor()
+            referral_code = self.generate_referral_code()
+            cursor.execute('''
+                INSERT OR IGNORE INTO users (user_id, first_name, username, referral_code, referred_by)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, first_name, username, referral_code, referred_by))
+            if referred_by:
+                cursor.execute('INSERT OR IGNORE INTO referrals (referrer_id, referred_id) VALUES (?, ?)', (referred_by, user_id))
+            self.conn.commit()
+            return referral_code
+        except Exception as e:
+            logger.error(f"Ошибка добавления пользователя: {e}")
+            return None
+
+    def generate_referral_code(self):
+        alphabet = string.ascii_uppercase + string.digits
+        while True:
+            code = ''.join(secrets.choice(alphabet) for _ in range(8))
+            cursor = self.conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM users WHERE referral_code = ?', (code,))
+            if cursor.fetchone()[0] == 0:
+                return code
+
+    def add_subscription(self, user_id, client_name, config_path, days, speed_limit=10, is_trial=False):
+        try:
+            start_date = datetime.now()
+            end_date = start_date + timedelta(days=days)
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT INTO subscriptions (user_id, client_name, config_path, start_date, end_date, speed_limit, is_trial)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, client_name, config_path, start_date, end_date, speed_limit, int(is_trial)))
+            if is_trial:
+                cursor.execute('UPDATE users SET trial_used = 1 WHERE user_id = ?', (user_id,))
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Ошибка добавления подписки: {e}")
+            raise
+
+    def get_user_config(self, user_id):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT config_path FROM subscriptions WHERE user_id = ? AND end_date > datetime("now") ORDER BY end_date DESC LIMIT 1', (user_id,))
+        result = cursor.fetchone()
+        return result[0] if result else None
+
+    def is_admin(self, user_id):
+        return user_id in ADMINS
+
+    def get_user_by_referral_code(self, referral_code):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT user_id FROM users WHERE referral_code = ?', (referral_code,))
+        result = cursor.fetchone()
+        return result[0] if result else None
+
+    def has_used_trial(self, user_id):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT trial_used FROM users WHERE user_id = ?', (user_id,))
+        result = cursor.fetchone()
+        return result[0] if result else 0
+
+class OpenVPNManager:
+    def __init__(self, db):
+        self.db = db
+    
+    def create_client_config(self, client_name, speed_limit=10):
+        try:
+            # Создаем сертификаты
+            subprocess.run(['/bin/bash', '-c', f'cd /etc/openvpn/easy-rsa && ./easyrsa --batch gen-req {client_name} nopass'], check=True, timeout=60)
+            subprocess.run(['/bin/bash', '-c', f'cd /etc/openvpn/easy-rsa && echo "yes" | ./easyrsa --batch sign-req client {client_name}'], check=True, timeout=60)
+            
+            # Читаем файлы
+            with open('/etc/openvpn/ca.crt', 'r') as f: ca_cert = f.read()
+            with open(f'/etc/openvpn/easy-rsa/pki/issued/{client_name}.crt', 'r') as f: client_cert = f.read()
+            with open(f'/etc/openvpn/easy-rsa/pki/private/{client_name}.key', 'r') as f: client_key = f.read()
+            with open('/etc/openvpn/ta.key', 'r') as f: ta_key = f.read()
+
+            # Создаем конфиг
+            config_content = f'''client
+dev tun
+proto udp
+remote {SERVER_IP} 1194
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-CBC
+verb 3
+<ca>
+{ca_cert}
+</ca>
+<cert>
+{client_cert}
+</cert>
+<key>
+{client_key}
+</key>
+<tls-auth>
+{ta_key}
+</tls-auth>
+key-direction 1
+'''
+
+            config_path = f"{OVPN_CLIENT_DIR}{client_name}.ovpn"
+            with open(config_path, 'w') as f:
+                f.write(config_content)
+            return config_path
+            
+        except Exception as e:
+            raise Exception(f"Ошибка создания конфига: {str(e)}")
+
+class VPNBot:
+    def __init__(self):
+        self.db = Database()
+        self.ovpn = OpenVPNManager(self.db)
+        self.application = Application.builder().token(BOT_TOKEN).build()
+        self.setup_handlers()
+        logger.info("Бот инициализирован")
+
+    def setup_handlers(self):
+        self.application.add_handler(CommandHandler("start", self.start))
+        self.application.add_handler(CommandHandler("buy", self.buy))
+        self.application.add_handler(CommandHandler("myconfig", self.my_config))
+        self.application.add_handler(CommandHandler("admin", self.admin_panel))
+        self.application.add_handler(CommandHandler("trial", self.trial))
+        self.application.add_handler(CommandHandler("referral", self.referral))
+        self.application.add_handler(CommandHandler("stop", self.stop_bot))
+        self.application.add_handler(CallbackQueryHandler(self.button_handler))
+
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            user = update.effective_user
+            referred_by = None
+            if context.args:
+                referral_code = context.args[0]
+                referred_by = self.db.get_user_by_referral_code(referral_code)
+            referral_code = self.db.add_user(user.id, user.first_name, user.username, referred_by)
+            await self.show_main_menu(update.message, user, referral_code)
+        except Exception as e:
+            await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
+    async def show_main_menu(self, message, user, referral_code=None):
+        keyboard = [
+            [InlineKeyboardButton("🛒 Купить доступ", callback_data='buy')],
+            [InlineKeyboardButton("📁 Мой конфиг", callback_data='myconfig')],
+            [InlineKeyboardButton("🎁 7 дней пробный период", callback_data='trial')],
+            [InlineKeyboardButton("👥 Реферальная программа", callback_data='referral')]
+        ]
+        if self.db.is_admin(user.id):
+            keyboard.append([InlineKeyboardButton("👨‍💻 Админ панель", callback_data='admin_panel')])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        message_text = f"Привет, {user.first_name}! 👋\n\n🤖 Coffee Coma VPN\n\n"
+        
+        if referral_code:
+            bot_username = (await self.application.bot.get_me()).username
+            referral_link = f"https://t.me/{bot_username}?start={referral_code}"
+            message_text += f"📋 Реферальный код: `{referral_code}`\n🔗 Ссылка: {referral_link}\n\n"
+        
+        message_text += "Выберите действие:"
+        await message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def trial(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            user_id = update.effective_user.id
+            if self.db.has_used_trial(user_id):
+                await update.message.reply_text("❌ Вы уже использовали пробный период.")
+                return
+            
+            client_name = f"trial_{user_id}_{int(time.time())}"
+            config_path = self.ovpn.create_client_config(client_name, TRIAL_SPEED_LIMIT)
+            self.db.add_subscription(user_id, client_name, config_path, TRIAL_DAYS, TRIAL_SPEED_LIMIT, True)
+            
+            await update.message.reply_document(
+                document=open(config_path, 'rb'),
+                caption=f"🎉 Пробный период на 7 дней!\n⚡ Скорость: {TRIAL_SPEED_LIMIT} Мбит/с\n🌐 Сервер: {SERVER_IP}"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+    async def admin_panel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not self.db.is_admin(user_id):
+            await update.message.reply_text("❌ Доступ запрещен.")
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
+            [InlineKeyboardButton("🔄 Перезапустить", callback_data='admin_restart')],
+            [InlineKeyboardButton("⏹ Остановить", callback_data='admin_stop')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("👨‍💻 Админ-панель:", reply_markup=reply_markup)
+
+    async def stop_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not self.db.is_admin(user_id):
+            await update.message.reply_text("❌ Доступ запрещен.")
+            return
+        await update.message.reply_text("🛑 Останавливаю бота...")
+        os._exit(0)
+
+    async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        data = query.data
+        
+        if data == 'trial':
+            await self.trial(update, context)
+        elif data == 'admin_panel':
+            await self.admin_panel(update, context)
+        elif data == 'admin_stop':
+            await self.stop_bot(update, context)
+
+    def run(self):
+        self.application.run_polling()
+
+if __name__ == "__main__":
+    bot = VPNBot()
+    bot.run()
