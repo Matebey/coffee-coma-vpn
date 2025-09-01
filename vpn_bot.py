@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
-from config import BOT_TOKEN, ADMINS, OVPN_KEYS_DIR, OVPN_CLIENT_DIR, DB_PATH, DNS_SERVERS, OVPN_PORT, yoomoney_api, cloudtips_api, PRICES, REFERRAL_REWARD_DAYS, TRIAL_DAYS, DEFAULT_SPEED_LIMIT, TRIAL_SPEED_LIMIT
+from config import BOT_TOKEN, ADMINS, OVPN_KEYS_DIR, OVPN_CLIENT_DIR, DB_PATH, DNS_SERVERS, OVPN_PORT, yoomoney_api, cloudtips_api, PRICES, REFERRAL_REWARD_DAYS, TRIAL_DAYS, DEFAULT_SPEED_LIMIT, TRIAL_SPEED_LIMIT, SERVER_IP
 
 # Настройка логирования
 logging.basicConfig(
@@ -108,10 +108,19 @@ class Database:
     def add_user(self, user_id, first_name, username, referred_by=None):
         try:
             cursor = self.conn.cursor()
+            
+            # Проверяем, существует ли пользователь
+            cursor.execute('SELECT referral_code FROM users WHERE user_id = ?', (user_id,))
+            existing_user = cursor.fetchone()
+            
+            if existing_user:
+                return existing_user[0]  # Возвращаем существующий реферальный код
+            
+            # Создаем нового пользователя
             referral_code = self.generate_referral_code()
             
             cursor.execute('''
-                INSERT OR IGNORE INTO users (user_id, first_name, username, referral_code, referred_by)
+                INSERT INTO users (user_id, first_name, username, referral_code, referred_by)
                 VALUES (?, ?, ?, ?, ?)
             ''', (user_id, first_name, username, referral_code, referred_by))
             
@@ -243,6 +252,9 @@ class Database:
         return cursor.rowcount
 
 class OpenVPNManager:
+    def __init__(self, db):
+        self.db = db
+    
     def create_client_config(self, client_name, speed_limit=10):
         try:
             # Создаем запрос сертификата
@@ -277,12 +289,6 @@ class OpenVPNManager:
         if not os.path.exists(key_path):
             raise Exception(f"Файл ключа не создан: {key_path}")
 
-        # Получаем IP сервера
-        try:
-            server_ip = subprocess.check_output("curl -s ifconfig.me", shell=True, timeout=10).decode().strip()
-        except:
-            server_ip = "your_server_ip"
-
         # Читаем файлы сертификатов
         try:
             with open(f"{OVPN_KEYS_DIR}ca.crt", 'r') as f:
@@ -299,7 +305,7 @@ class OpenVPNManager:
         config_content = f'''client
 dev tun
 proto udp
-remote {server_ip} 1194
+remote {SERVER_IP} 1194
 resolv-retry infinite
 nobind
 persist-key
@@ -365,7 +371,7 @@ key-direction 1
 class VPNBot:
     def __init__(self):
         self.db = Database()
-        self.ovpn = OpenVPNManager()
+        self.ovpn = OpenVPNManager(self.db)
         
         try:
             self.application = Application.builder().token(BOT_TOKEN).build()
@@ -396,8 +402,14 @@ class VPNBot:
             if context.args:
                 referral_code = context.args[0]
                 referred_by = self.db.get_user_by_referral_code(referral_code)
+                if referred_by is None:
+                    await update.message.reply_text("❌ Неверный реферальный код.")
+                    return
             
             referral_code = self.db.add_user(user.id, user.first_name, user.username, referred_by)
+            
+            if referred_by:
+                await update.message.reply_text(f"🎉 Вы зарегистрировались по реферальной ссылке!")
             
             await self.show_main_menu(update.message, user, referral_code)
             
@@ -487,7 +499,7 @@ class VPNBot:
                 
                 await update.message.reply_document(
                     document=open(config_path, 'rb'),
-                    caption=f"✅ Оплата подтверждена! Ваш конфиг на 30 дней создан!\n⚡ Скорость: {speed_limit} Мбит/с"
+                    caption=f"✅ Оплата подтверждена! Ваш конфиг на 30 дней создан!\n⚡ Скорость: {speed_limit} Мбит/с\n🌐 Сервер: {SERVER_IP}"
                 )
             except Exception as e:
                 await update.message.reply_text(f"❌ Ошибка при создании конфига: {str(e)}")
@@ -565,33 +577,6 @@ class VPNBot:
             await update.message.reply_text("❌ Ошибка при активации пробного периода.")
 
     async def referral(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        try:
-            user_id = update.effective_user.id
-            cursor = self.db.conn.cursor()
-            cursor.execute('SELECT referral_code FROM users WHERE user_id = ?', (user_id,))
-            result = cursor.fetchone()
-            
-            if not result:
-                await update.message.reply_text("❌ Ошибка получения реферальной информации.")
-                return
-                
-            referral_code = result[0]
-            pending_rewards, total_referrals = self.db.get_referral_stats(user_id)
-            
-            bot_username = (await self.application.bot.get_me()).username
-            referral_link = f"https://t.me/{bot_username}?start={referral_code}"
-            
-            message_text = f"👥 *Реферальная программа*\n\n"
-            message_text += f"🔗 Ваша реферальная ссылка:\n`{referral_link}`\n\n"
-            message_text += f"📋 Ваш реферальный код: `{referral_code}`\n\n"
-            message_text += f"📊 Статистика:\n"
-            message_text += f"• Всего приглашено: {total_referrals}\n"
-            message_text += f"• Доступно наград: {pending_rewards}\n\n"
-            message_text += f"🎁 За каждого приглашенного друга вы получаете +{REFERRAL_REWARD_DAYS} дней к подписке!\n\n"
-            message_text += f"💡 Как это работает:\n"
-            message_text += f"1. Делитесь своей ссылкой\n"
-            message_text += f"2
-                async def referral(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             user_id = update.effective_user.id
             cursor = self.db.conn.cursor()
