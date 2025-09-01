@@ -5,11 +5,11 @@ import os
 import re
 import secrets
 import string
+import time
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
-from yoomoney import Quickpay, Client
-import asyncio
+from config import BOT_TOKEN, ADMINS, OVPN_KEYS_DIR, OVPN_CLIENT_DIR, DB_PATH, DNS_SERVERS, OVPN_PORT, yoomoney_api, cloudtips_api, PRICES, REFERRAL_REWARD_DAYS, TRIAL_DAYS, DEFAULT_SPEED_LIMIT, TRIAL_SPEED_LIMIT
 
 # Настройка логирования
 logging.basicConfig(
@@ -17,21 +17,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# Конфигурация
-BOT_TOKEN = "7953514140:AAGg-AgyL6Y2mvzfyKesnpouJkU6p_B8Zeo"
-ADMINS = [5631675412]
-
-# Пути
-OVPN_KEYS_DIR = "/etc/openvpn/easy-rsa/pki/"
-OVPN_CLIENT_DIR = "/etc/openvpn/client-configs/"
-DB_PATH = "/opt/coffee-coma-vpn/vpn_bot.db"
-
-# Настройки
-REFERRAL_REWARD_DAYS = 5
-TRIAL_DAYS = 5
-DEFAULT_SPEED_LIMIT = 10
-TRIAL_SPEED_LIMIT = 5
 
 class Database:
     def __init__(self):
@@ -99,7 +84,7 @@ class Database:
             ("price", "50"),
             ("speed_limit", "10"),
             ("yoomoney_wallet", "4100117852673007"),
-            ("yoomoney_token", "")
+            ("cloudtips_token", "ВАШ_CLOUDTIPS_TOKEN")
         ]
         
         for key, value in default_settings:
@@ -261,59 +246,67 @@ class OpenVPNManager:
     def create_client_config(self, client_name, speed_limit=10):
         try:
             # Создаем запрос сертификата
-            subprocess.run([
+            result = subprocess.run([
                 '/bin/bash', '-c', 
                 f'cd /etc/openvpn/easy-rsa && ./easyrsa --batch gen-req {client_name} nopass'
-            ], check=True, capture_output=True, timeout=60)
+            ], capture_output=True, text=True, timeout=60)
+            
+            if result.returncode != 0:
+                raise Exception(f"Ошибка создания запроса: {result.stderr}")
             
             # Подписываем сертификат
-            subprocess.run([
+            result = subprocess.run([
                 '/bin/bash', '-c', 
                 f'cd /etc/openvpn/easy-rsa && echo "yes" | ./easyrsa --batch sign-req client {client_name}'
-            ], check=True, capture_output=True, timeout=60)
+            ], capture_output=True, text=True, timeout=60)
+            
+            if result.returncode != 0:
+                raise Exception(f"Ошибка подписания сертификата: {result.stderr}")
             
         except subprocess.CalledProcessError as e:
-            raise Exception(f"Ошибка создания сертификата: {e.stderr.decode()}")
+            raise Exception(f"Ошибка создания сертификата: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Ошибка: {str(e)}")
+
+        # Проверяем файлы сертификатов
+        cert_path = f"{OVPN_KEYS_DIR}issued/{client_name}.crt"
+        key_path = f"{OVPN_KEYS_DIR}private/{client_name}.key"
+        
+        if not os.path.exists(cert_path):
+            raise Exception(f"Файл сертификата не создан: {cert_path}")
+        if not os.path.exists(key_path):
+            raise Exception(f"Файл ключа не создан: {key_path}")
 
         # Получаем IP сервера
         try:
             server_ip = subprocess.check_output("curl -s ifconfig.me", shell=True, timeout=10).decode().strip()
         except:
-            server_ip = "77.239.105.17"
+            server_ip = "your_server_ip"
 
         # Читаем файлы сертификатов
         try:
             with open(f"{OVPN_KEYS_DIR}ca.crt", 'r') as f:
                 ca_cert = f.read()
-            with open(f"{OVPN_KEYS_DIR}issued/{client_name}.crt", 'r') as f:
+            with open(cert_path, 'r') as f:
                 client_cert = f.read()
-            with open(f"{OVPN_KEYS_DIR}private/{client_name}.key", 'r') as f:
+            with open(key_path, 'r') as f:
                 client_key = f.read()
             with open(f"{OVPN_KEYS_DIR}ta.key", 'r') as f:
                 ta_key = f.read()
         except Exception as e:
             raise Exception(f"Ошибка чтения файлов: {str(e)}")
 
-        # Получаем настройки из базы
-        dns1 = self.db.get_setting('dns1', '8.8.8.8')
-        dns2 = self.db.get_setting('dns2', '8.8.4.4')
-        port = self.db.get_setting('port', '1194')
-
         config_content = f'''client
 dev tun
 proto udp
-remote {server_ip} {port}
+remote {server_ip} 1194
 resolv-retry infinite
 nobind
 persist-key
 persist-tun
 remote-cert-tls server
 cipher AES-256-CBC
-auth SHA256
 verb 3
-redirect-gateway def1
-dhcp-option DNS {dns1}
-dhcp-option DNS {dns2}
 <ca>
 {ca_cert}
 </ca>
@@ -394,41 +387,6 @@ class VPNBot:
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
-    async def create_payment(self, user_id, amount):
-        """Создает платеж в ЮMoney"""
-        try:
-            label = f"vpn_{user_id}_{int(datetime.now().timestamp())}"
-            quickpay = Quickpay(
-                receiver=self.db.get_setting('yoomoney_wallet'),
-                quickpay_form="shop",
-                targets="Оплата VPN доступа",
-                paymentType="SB",
-                sum=amount,
-                label=label
-            )
-            return quickpay.redirected_url, label
-        except Exception as e:
-            logger.error(f"Ошибка создания платежа: {e}")
-            return None, None
-
-    async def check_yoomoney_payment(self, label):
-        """Проверяет оплату через ЮMoney"""
-        try:
-            token = self.db.get_setting('yoomoney_token')
-            if not token:
-                return False
-                
-            client = Client(token)
-            history = client.operation_history(label=label)
-            
-            for operation in history.operations:
-                if operation.status == 'success':
-                    return True
-            return False
-        except Exception as e:
-            logger.error(f"Ошибка проверки платежа: {e}")
-            return False
-
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             user = update.effective_user
@@ -476,112 +434,74 @@ class VPNBot:
     async def buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             user = update.effective_user
-            price = int(self.db.get_setting('price', 50))
+            price = self.db.get_setting('price', 50)
             
-            # Создаем платеж
-            payment_url, payment_label = await self.create_payment(user.id, price)
+            # Создаем платеж в CloudTips
+            payment_data = cloudtips_api.create_payment(price, f"VPN доступ для {user.id}")
             
-            if not payment_url:
-                await update.message.reply_text("❌ Ошибка при создании платежа")
-                return
+            if payment_data['success']:
+                keyboard = [
+                    [InlineKeyboardButton(f"💳 Оплатить {price} руб (CloudTips)", url=payment_data['payment_url'])],
+                    [InlineKeyboardButton("✅ Проверить оплату", callback_data='check_payment')],
+                    [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
+                ]
+            else:
+                # Fallback to YooMoney
+                yoomoney_url = f"https://yoomoney.ru/quickpay/confirm.xml?receiver={self.db.get_setting('yoomoney_wallet')}&quickpay-form=small&sum={price}&label=vpn_{user.id}&paymentType=AC"
+                keyboard = [
+                    [InlineKeyboardButton(f"💳 Оплатить {price} руб (ЮMoney)", url=yoomoney_url)],
+                    [InlineKeyboardButton("✅ Проверить оплату", callback_data='check_payment')],
+                    [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
+                ]
             
-            # Сохраняем информацию о платеже
-            context.user_data['payment_label'] = payment_label
-            context.user_data['payment_user_id'] = user.id
-            
-            keyboard = [
-                [InlineKeyboardButton("💳 Перейти к оплате", url=payment_url)],
-                [InlineKeyboardButton("✅ Проверить оплату", callback_data='check_payment')],
-                [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
-            ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await update.message.reply_text(
-                f"💰 *Оплата VPN доступа*\n\n"
-                f"Сумма: {price} руб.\n"
-                f"Способ оплаты: СБП/Карта\n\n"
-                f"1. Нажмите 'Перейти к оплате'\n"
-                f"2. Оплатите счет\n"
-                f"3. Вернитесь в бот и нажмите 'Проверить оплату'",
+                f"💰 *Тарифы VPN*\n\n"
+                f"• 1 месяц - {price} рублей\n"
+                f"• Скорость: {self.db.get_setting('speed_limit', 10)} Мбит/с\n"
+                f"• Безлимитный трафик\n\n"
+                f"Выберите способ оплаты:",
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
             
         except Exception as e:
             logger.error(f"Ошибка в команде /buy: {e}")
-            await update.message.reply_text("❌ Ошибка при создании платежа.")
+            await update.message.reply_text("❌ Ошибка при отображении тарифов.")
 
     async def check_payment(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        try:
-            user_id = update.effective_user.id
-            payment_label = context.user_data.get('payment_label')
+        user_id = update.effective_user.id
+        price = self.db.get_setting('price', 50)
+        
+        # Проверяем платеж через ЮMoney API
+        payment_received = yoomoney_api.check_payment(f"vpn_{user_id}", price)
+        
+        if payment_received:
+            client_name = f"user_{user_id}_{int(datetime.now().timestamp())}"
+            speed_limit = int(self.db.get_setting('speed_limit', 10))
             
-            if not payment_label:
-                await update.message.reply_text("❌ Информация о платеже не найдена")
-                return
-                
-            # Проверяем оплату
-            payment_success = await self.check_yoomoney_payment(payment_label)
-            
-            if payment_success:
-                # Создаем конфиг
-                client_name = f"client_{user_id}_{int(datetime.now().timestamp())}"
-                speed_limit = int(self.db.get_setting('speed_limit', 10))
-                
+            try:
                 config_path = self.ovpn.create_client_config(client_name, speed_limit)
                 self.db.add_subscription(user_id, client_name, config_path, 30, speed_limit)
                 
-                # Отправляем конфиг
                 await update.message.reply_document(
                     document=open(config_path, 'rb'),
-                    caption="✅ Оплата прошла успешно! Ваш конфигурационный файл готов.\nСрок действия: 30 дней"
+                    caption=f"✅ Оплата подтверждена! Ваш конфиг на 30 дней создан!\n⚡ Скорость: {speed_limit} Мбит/с"
                 )
-                
-                # Начисляем реферальную награду если есть
-                cursor = self.db.conn.cursor()
-                cursor.execute('SELECT referred_by FROM users WHERE user_id = ?', (user_id,))
-                referrer = cursor.fetchone()
-                
-                if referrer and referrer[0]:
-                    # Добавляем дни рефереру
-                    referrer_id = referrer[0]
-                    cursor.execute('''
-                        UPDATE subscriptions 
-                        SET end_date = datetime(end_date, '+5 days') 
-                        WHERE user_id = ? AND end_date > datetime('now')
-                    ''', (referrer_id,))
-                    self.db.conn.commit()
-                    
-                    # Помечаем награду как полученную
-                    cursor.execute('''
-                        UPDATE referrals 
-                        SET reward_claimed = 1 
-                        WHERE referrer_id = ? AND referred_id = ?
-                    ''', (referrer_id, user_id))
-                    self.db.conn.commit()
-                    
-                    try:
-                        await self.application.bot.send_message(
-                            referrer_id,
-                            "🎉 Вам начислено +5 дней за реферала!"
-                        )
-                    except:
-                        pass
-            else:
-                keyboard = [
-                    [InlineKeyboardButton("🔄 Попробовать снова", callback_data='check_payment')],
-                    [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await update.message.reply_text(
-                    "❌ Оплата не найдена. Попробуйте проверить позже или используйте пробный период.",
-                    reply_markup=reply_markup
-                )
-                
-        except Exception as e:
-            logger.error(f"Ошибка проверки платежа: {e}")
-            await update.message.reply_text("❌ Ошибка при проверке платежа")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка при создании конфига: {str(e)}")
+        else:
+            keyboard = [
+                [InlineKeyboardButton("🔄 Попробовать снова", callback_data='check_payment')],
+                [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                "❌ Оплата не найдена. Пожалуйста, подождите несколько минут или проверьте правильность оплаты.",
+                reply_markup=reply_markup
+            )
 
     async def my_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -591,13 +511,28 @@ class VPNBot:
             if config_path and os.path.exists(config_path):
                 await update.message.reply_document(
                     document=open(config_path, 'rb'),
-                    caption="✅ Ваш конфигурационный файл OpenVPN"
+                    caption="📁 Ваш конфигурационный файл OpenVPN\n\n"
+                           "💡 Инструкция по установке:\n"
+                           "1. Скачайте файл\n"
+                           "2. Установите OpenVPN клиент\n"
+                           "3. Импортируйте этот файл\n"
+                           "4. Подключитесь к серверу"
                 )
             else:
-                await update.message.reply_text("❌ У вас нет активной подписки.")
+                keyboard = [
+                    [InlineKeyboardButton("🛒 Купить доступ", callback_data='buy')],
+                    [InlineKeyboardButton("🎁 Получить пробный период", callback_data='trial')]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(
+                    "❌ У вас нет активной подписки.\n\n"
+                    "Вы можете приобрести доступ или воспользоваться пробным периодом:",
+                    reply_markup=reply_markup
+                )
                 
         except Exception as e:
-            logger.error(f"Ошибка в my_config: {e}")
+            logger.error(f"Ошибка в команде /myconfig: {e}")
             await update.message.reply_text("❌ Ошибка при получении конфига.")
 
     async def trial(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -605,580 +540,370 @@ class VPNBot:
             user_id = update.effective_user.id
             
             if self.db.has_used_trial(user_id):
-                await update.message.reply_text("❌ Вы уже использовали бесплатный пробный период.")
+                await update.message.reply_text(
+                    "❌ Вы уже использовали пробный период.\n\n"
+                    "Приобретите полный доступ для продолжения использования VPN:",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🛒 Купить доступ", callback_data='buy')]
+                    ])
+                )
                 return
             
             client_name = f"trial_{user_id}_{int(datetime.now().timestamp())}"
             config_path = self.ovpn.create_client_config(client_name, TRIAL_SPEED_LIMIT)
-            self.db.add_subscription(user_id, client_name, config_path, TRIAL_DAYS, TRIAL_SPEED_LIMIT, is_trial=True)
+            self.db.add_subscription(user_id, client_name, config_path, TRIAL_DAYS, TRIAL_SPEED_LIMIT, True)
             
             await update.message.reply_document(
                 document=open(config_path, 'rb'),
-                caption=f"✅ Вам предоставлен бесплатный пробный период на {TRIAL_DAYS} дней!\n⚡ Скорость: {TRIAL_SPEED_LIMIT} Мбит/с"
+                caption=f"🎉 Пробный период активирован на {TRIAL_DAYS} дней!\n"
+                       f"⚡ Скорость: {TRIAL_SPEED_LIMIT} Мбит/с\n\n"
+                       "💡 После окончания пробного периода вы можете приобрести полный доступ."
             )
             
         except Exception as e:
-            logger.error(f"Ошибка в trial: {e}")
-            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+            logger.error(f"Ошибка в команде /trial: {e}")
+            await update.message.reply_text("❌ Ошибка при активации пробного периода.")
 
     async def referral(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             user_id = update.effective_user.id
-            
             cursor = self.db.conn.cursor()
             cursor.execute('SELECT referral_code FROM users WHERE user_id = ?', (user_id,))
             result = cursor.fetchone()
             
             if not result:
-                await update.message.reply_text("❌ Реферальный код не найден")
+                await update.message.reply_text("❌ Ошибка получения реферальной информации.")
                 return
-            
+                
             referral_code = result[0]
+            pending_rewards, total_referrals = self.db.get_referral_stats(user_id)
+            
             bot_username = (await self.application.bot.get_me()).username
             referral_link = f"https://t.me/{bot_username}?start={referral_code}"
             
+            message_text = f"👥 *Реферальная программа*\n\n"
+            message_text += f"🔗 Ваша реферальная ссылка:\n`{referral_link}`\n\n"
+            message_text += f"📋 Ваш реферальный код: `{referral_code}`\n\n"
+            message_text += f"📊 Статистика:\n"
+            message_text += f"• Всего приглашено: {total_referrals}\n"
+            message_text += f"• Доступно наград: {pending_rewards}\n\n"
+            message_text += f"🎁 За каждого приглашенного друга вы получаете +{REFERRAL_REWARD_DAYS} дней к подписке!\n\n"
+            message_text += f"💡 Как это работает:\n"
+            message_text += f"1. Делитесь своей ссылкой\n"
+            message_text += f"2
+                async def referral(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            user_id = update.effective_user.id
+            cursor = self.db.conn.cursor()
+            cursor.execute('SELECT referral_code FROM users WHERE user_id = ?', (user_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                await update.message.reply_text("❌ Ошибка получения реферальной информации.")
+                return
+                
+            referral_code = result[0]
             pending_rewards, total_referrals = self.db.get_referral_stats(user_id)
             
-            message = f"👥 *Реферальная программа*\n\n"
-            message += f"📋 Ваш реферальный код: `{referral_code}`\n"
-            message += f"🔗 Ваша ссылка: {referral_link}\n\n"
-            message += f"📊 Статистика:\n"
-            message += f"• Всего приглашено: {total_referrals}\n"
-            message += f"• Доступно наград: {pending_rewards}\n\n"
-            message += "🎁 За каждого приглашенного друга:\n"
-            message += "• Ваш друг получает пробный период 5 дней\n"
-            message += "• Вы получаете +5 дней к вашей подписке"
+            bot_username = (await self.application.bot.get_me()).username
+            referral_link = f"https://t.me/{bot_username}?start={referral_code}"
             
+            message_text = f"👥 *Реферальная программа*\n\n"
+            message_text += f"🔗 Ваша реферальная ссылка:\n`{referral_link}`\n\n"
+            message_text += f"📋 Ваш реферальный код: `{referral_code}`\n\n"
+            message_text += f"📊 Статистика:\n"
+            message_text += f"• Всего приглашено: {total_referrals}\n"
+            message_text += f"• Доступно наград: {pending_rewards}\n\n"
+            message_text += f"🎁 За каждого приглашенного друга вы получаете +{REFERRAL_REWARD_DAYS} дней к подписке!\n\n"
+            message_text += f"💡 Как это работает:\n"
+            message_text += f"1. Делитесь своей ссылкой\n"
+            message_text += f"2. Ваш друг переходит по ссылке и регистрируется\n"
+            message_text += f"3. После его первой покупки вы получаете награду\n"
+            message_text += f"4. Используйте награду для продления подписки"
+
             keyboard = []
             if pending_rewards > 0:
-                keyboard.append([InlineKeyboardButton("🎯 Забрать награду", callback_data='claim_reward')])
-            
+                keyboard.append([InlineKeyboardButton("🎁 Забрать награду", callback_data='claim_reward')])
             keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data='main_menu')])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+            await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
             
         except Exception as e:
-            logger.error(f"Ошибка в referral: {e}")
+            logger.error(f"Ошибка в команде /referral: {e}")
             await update.message.reply_text("❌ Ошибка при получении реферальной информации.")
 
     async def admin_panel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             user_id = update.effective_user.id
+            
             if not self.db.is_admin(user_id):
-                await update.message.reply_text("❌ Доступ запрещен")
+                await update.message.reply_text("❌ У вас нет доступа к админ-панели.")
                 return
             
             keyboard = [
-                [InlineKeyboardButton("⚙️ Настройки сервера", callback_data='admin_settings')],
-                [InlineKeyboardButton("🗑️ Управление ключами", callback_data='admin_keys')],
-                [InlineKeyboardButton("🎁 Выдать бесплатный доступ", callback_data='admin_free')],
                 [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
-                [InlineKeyboardButton("🔙 В главное меню", callback_data='main_menu')]
+                [InlineKeyboardButton("👥 Пользователи", callback_data='admin_users')],
+                [InlineKeyboardButton("⚙️ Настройки", callback_data='admin_settings')],
+                [InlineKeyboardButton("🔧 Управление подписками", callback_data='admin_subscriptions')],
+                [InlineKeyboardButton("🔄 Перезапустить сервисы", callback_data='admin_restart')],
+                [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
             ]
+            
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await update.message.reply_text("👨‍💻 *Панель администратора*", reply_markup=reply_markup, parse_mode='Markdown')
+            await update.message.reply_text(
+                "👨‍💻 *Админ-панель*\n\n"
+                "Выберите действие:",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
             
         except Exception as e:
-            logger.error(f"Ошибка в admin_panel: {e}")
+            logger.error(f"Ошибка в команде /admin: {e}")
             await update.message.reply_text("❌ Ошибка при открытии админ-панели.")
 
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        data = query.data
+        
         try:
-            query = update.callback_query
-            await query.answer()
-            
-            data = query.data
-            logger.info(f"Обработка callback: {data}")
-            
-            if data == 'buy':
-                await self.buy_callback(query)
+            if data == 'main_menu':
+                await self.show_main_menu(query.message, query.from_user)
+                
+            elif data == 'buy':
+                await self.buy(update, context)
+                
             elif data == 'myconfig':
-                await self.my_config_callback(query)
+                await self.my_config(update, context)
+                
             elif data == 'trial':
-                await self.trial_callback(query)
+                await self.trial(update, context)
+                
             elif data == 'referral':
-                await self.referral_callback(query)
-            elif data == 'admin_panel':
-                await self.admin_panel_callback(query)
-            elif data == 'admin_settings':
-                await self.settings_panel_callback(query)
-            elif data == 'admin_keys':
-                await self.manage_keys(query)
-            elif data == 'admin_free':
-                await self.create_free_config(query)
-            elif data == 'admin_stats':
-                await self.show_stats(query)
+                await self.referral(update, context)
+                
             elif data == 'check_payment':
-                await self.check_payment_callback(query)
+                await self.check_payment(update, context)
+                
             elif data == 'claim_reward':
-                await self.claim_reward_callback(query)
-            elif data == 'main_menu':
-                await self.show_main_menu(query)
-            elif data.startswith('revoke_'):
-                client_name = data.replace('revoke_', '')
-                await self.revoke_client_callback(query, client_name)
-            elif data == 'admin_back':
-                await self.admin_panel_callback(query)
-            elif data in ['change_dns', 'change_port', 'change_price', 'change_speed', 'change_yoomoney_wallet', 'change_yoomoney_token']:
-                context.user_data['awaiting_input'] = data
-                await self.handle_settings_input(query, data)
+                await self.claim_reward(update, context)
+                
+            elif data == 'admin_panel':
+                await self.admin_panel(update, context)
+                
+            elif data.startswith('admin_'):
+                await self.handle_admin_actions(update, context, data)
                 
         except Exception as e:
-            logger.error(f"Ошибка в button_handler: {e}")
-            try:
-                await query.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
-            except:
-                pass
+            logger.error(f"Ошибка в обработчике кнопок: {e}")
+            await query.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
-    async def buy_callback(self, query):
-        user = query.from_user
-        price = int(self.db.get_setting('price', 50))
-        
-        # Создаем платеж
-        payment_url, payment_label = await self.create_payment(user.id, price)
-        
-        if not payment_url:
-            await query.message.edit_text("❌ Ошибка при создании платежа")
-            return
-        
-        # Сохраняем информацию о платеже
-        context.user_data['payment_label'] = payment_label
-        context.user_data['payment_user_id'] = user.id
-        
-        keyboard = [
-            [InlineKeyboardButton("💳 Перейти к оплате", url=payment_url)],
-            [InlineKeyboardButton("✅ Проверить оплату", callback_data='check_payment')],
-            [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.edit_text(
-            f"💰 *Оплата VPN доступа*\n\n"
-            f"Сумма: {price} руб.\n"
-            f"Способ оплаты: СБП/Карта\n\n"
-            f"1. Нажмите 'Перейти к оплате'\n"
-            f"2. Оплатите счет\n"
-            f"3. Вернитесь в бот и нажмите 'Проверить оплату'",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-
-    async def my_config_callback(self, query):
-        user_id = query.from_user.id
-        config_path = self.db.get_user_config(user_id)
-        
-        if config_path and os.path.exists(config_path):
-            await query.message.reply_document(
-                document=open(config_path, 'rb'),
-                caption="✅ Ваш конфигурационный файл OpenVPN"
-            )
-        else:
-            await query.message.edit_text("❌ У вас нет активной подписки.")
-
-    async def trial_callback(self, query):
-        user_id = query.from_user.id
-        
-        if self.db.has_used_trial(user_id):
-            await query.message.edit_text("❌ Вы уже использовали бесплатный пробный период.")
-            return
-        
+    async def claim_reward(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
-            client_name = f"trial_{user_id}_{int(datetime.now().timestamp())}"
-            config_path = self.ovpn.create_client_config(client_name, TRIAL_SPEED_LIMIT)
-            self.db.add_subscription(user_id, client_name, config_path, TRIAL_DAYS, TRIAL_SPEED_LIMIT, is_trial=True)
+            user_id = update.callback_query.from_user.id
+            rewards_claimed = self.db.claim_referral_reward(user_id)
             
-            await query.message.reply_document(
-                document=open(config_path, 'rb'),
-                caption=f"✅ Вам предоставлен бесплатный пробный период на {TRIAL_DAYS} дней!\n⚡ Скорость: {TRIAL_SPEED_LIMIT} Мбит/с"
-            )
-            
-        except Exception as e:
-            await query.message.edit_text(f"❌ Ошибка: {str(e)}")
-
-    async def referral_callback(self, query):
-        user_id = query.from_user.id
-        
-        cursor = self.db.conn.cursor()
-        cursor.execute('SELECT referral_code FROM users WHERE user_id = ?', (user_id,))
-        result = cursor.fetchone()
-        
-        if not result:
-            await query.message.edit_text("❌ Реферальный код не найден")
-            return
-        
-        referral_code = result[0]
-        bot_username = (await self.application.bot.get_me()).username
-        referral_link = f"https://t.me/{bot_username}?start={referral_code}"
-        
-        pending_rewards, total_referrals = self.db.get_referral_stats(user_id)
-        
-        message = f"👥 *Реферальная программа*\n\n"
-        message += f"📋 Ваш реферальный код: `{referral_code}`\n"
-        message += f"🔗 Ваша ссылка: {referral_link}\n\n"
-        message += f"📊 Статистика:\n"
-        message += f"• Всего приглашено: {total_referrals}\n"
-        message += f"• Доступно наград: {pending_rewards}\n\n"
-        message += "🎁 За каждого приглашенного друга:\n"
-        message += "• Ваш друг получает пробный период 5 дней\n"
-        message += "• Вы получаете +5 дней к вашей подписке"
-        
-        keyboard = []
-        if pending_rewards > 0:
-            keyboard.append([InlineKeyboardButton("🎯 Забрать награду", callback_data='claim_reward')])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data='main_menu')])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.edit_text(message, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def admin_panel_callback(self, query):
-        user_id = query.from_user.id
-        if not self.db.is_admin(user_id):
-            await query.message.edit_text("❌ Доступ запрещен")
-            return
-        
-        keyboard = [
-            [InlineKeyboardButton("⚙️ Настройки сервера", callback_data='admin_settings')],
-            [InlineKeyboardButton("🗑️ Управление ключами", callback_data='admin_keys')],
-            [InlineKeyboardButton("🎁 Выдать бесплатный доступ", callback_data='admin_free')],
-            [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
-            [InlineKeyboardButton("🔙 В главное меню", callback_data='main_menu')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.edit_text("👨‍💻 *Панель администратора*", reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def settings_panel_callback(self, query):
-        user_id = query.from_user.id
-        if not self.db.is_admin(user_id):
-            await query.message.edit_text("❌ Доступ запрещен")
-            return
-        
-        dns1 = self.db.get_setting('dns1', '8.8.8.8')
-        dns2 = self.db.get_setting('dns2', '8.8.4.4')
-        port = self.db.get_setting('port', '1194')
-        price = self.db.get_setting('price', '50')
-        speed_limit = self.db.get_setting('speed_limit', '10')
-        yoomoney_wallet = self.db.get_setting('yoomoney_wallet', '')
-        yoomoney_token = self.db.get_setting('yoomoney_token', '')
-        
-        keyboard = [
-            [InlineKeyboardButton(f"🌐 DNS: {dns1} {dns2}", callback_data='change_dns')],
-            [InlineKeyboardButton(f"🔌 Порт: {port}", callback_data='change_port')],
-            [InlineKeyboardButton(f"💰 Цена: {price} руб", callback_data='change_price')],
-            [InlineKeyboardButton(f"⚡ Скорость: {speed_limit} Мбит/с", callback_data='change_speed')],
-            [InlineKeyboardButton(f"💳 ЮMoney Кошелек: {yoomoney_wallet}", callback_data='change_yoomoney_wallet')],
-            [InlineKeyboardButton(f"🔑 ЮMoney Токен: {'установлен' if yoomoney_token else 'не установлен'}", callback_data='change_yoomoney_token')],
-            [InlineKeyboardButton("🔙 Назад", callback_data='admin_back')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        message = "⚙️ *Текущие настройки сервера:*\n\n"
-        message += f"🌐 *DNS серверы:* {dns1}, {dns2}\n"
-        message += f"🔌 *Порт OpenVPN:* {port}\n"
-        message += f"💰 *Цена подписки:* {price} руб\n"
-        message += f"⚡ *Ограничение скорости:* {speed_limit} Мбит/с\n"
-        message += f"💳 *ЮMoney Кошелек:* {yoomoney_wallet}\n"
-        message += f"🔑 *ЮMoney Токен:* {'установлен' if yoomoney_token else 'не установлен'}\n\n"
-        message += "Выберите параметр для изменения:"
-        
-        await query.message.edit_text(message, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def handle_settings_input(self, query, input_type):
-        messages = {
-            'change_dns': "Введите новые DNS серверы через пробел (например: 1.1.1.1 1.0.0.1):",
-            'change_port': "Введите новый порт для OpenVPN (например: 443):",
-            'change_price': "Введите новую цену подписки в рублях (например: 100):",
-            'change_speed': "Введите новое ограничение скорости в Мбит/с (например: 20):",
-            'change_yoomoney_wallet': "Введите номер кошелька ЮMoney:",
-            'change_yoomoney_token': "Введите токен доступа ЮMoney:"
-        }
-        
-        await query.message.reply_text(messages.get(input_type, "Введите новое значение:"))
-
-    async def manage_keys(self, query):
-        user_id = query.from_user.id
-        if not self.db.is_admin(user_id):
-            await query.message.edit_text("❌ Доступ запрещен")
-            return
-        
-        subscriptions = self.db.get_all_subscriptions()
-        
-        if not subscriptions:
-            await query.message.edit_text("❌ Нет активных подписок")
-            return
-        
-        keyboard = []
-        for user_id, client_name, config_path, end_date, speed_limit, first_name in subscriptions:
-            keyboard.append([InlineKeyboardButton(
-                f"🗑️ {client_name} ({first_name}) до {end_date[:10]}", 
-                callback_data=f'revoke_{client_name}'
-            )])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data='admin_back')])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.edit_text("🗑️ Выберите ключ для удаления:", reply_markup=reply_markup)
-
-    async def revoke_client_callback(self, query, client_name):
-        success = self.ovpn.revoke_client(client_name)
-        if success:
-            self.db.delete_subscription(client_name)
-            await query.message.reply_text(f"✅ Ключ {client_name} отозван и удален!")
-        else:
-            await query.message.reply_text(f"❌ Ошибка при отзыве ключа {client_name}")
-
-    async def create_free_config(self, query):
-        user_id = query.from_user.id
-        if not self.db.is_admin(user_id):
-            await query.message.edit_text("❌ Доступ запрещен")
-            return
-        
-        try:
-            client_name = f"admin_{user_id}_{int(datetime.now().timestamp())}"
-            speed_limit = int(self.db.get_setting('speed_limit', 10))
-            config_path = self.ovpn.create_client_config(client_name, speed_limit)
-            self.db.add_subscription(user_id, client_name, config_path, 7, speed_limit)
-            
-            await query.message.reply_document(
-                document=open(config_path, 'rb'),
-                caption=f"✅ Ваш бесплатный конфиг на 7 дней создан!\n⚡ Скорость: {speed_limit} Мбит/с"
-            )
-        except Exception as e:
-            await query.message.edit_text(f"❌ Ошибка при создании конфига: {str(e)}")
-
-    async def show_stats(self, query):
-        user_id = query.from_user.id
-        if not self.db.is_admin(user_id):
-            await query.message.edit_text("❌ Доступ запрещен")
-            return
-        
-        cursor = self.db.conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM users')
-        users_count = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM subscriptions WHERE end_date > datetime("now")')
-        active_subs = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM referrals')
-        referrals_count = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT SUM(speed_limit) FROM subscriptions WHERE end_date > datetime("now")')
-        total_speed = cursor.fetchone()[0] or 0
-        
-        message = f"📊 *Статистика системы:*\n\n"
-        message += f"👥 Всего пользователей: {users_count}\n"
-        message += f"🔗 Активных подписок: {active_subs}\n"
-        message += f"👥 Рефералов: {referrals_count}\n"
-        message += f"⚡ Общая скорость: {total_speed} Мбит/с\n\n"
-        message += f"🌐 DNS: {self.db.get_setting('dns1', '8.8.8.8')}, {self.db.get_setting('dns2', '8.8.4.4')}\n"
-        message += f"🔌 Порт: {self.db.get_setting('port', '1194')}\n"
-        message += f"💰 Цена: {self.db.get_setting('price', '50')} руб\n"
-        message += f"⚡ Скорость: {self.db.get_setting('speed_limit', '10')} Мбит/с"
-        
-        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data='admin_back')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.edit_text(message, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def check_payment_callback(self, query):
-        try:
-            user_id = query.from_user.id
-            payment_label = context.user_data.get('payment_label')
-            
-            if not payment_label:
-                await query.message.edit_text("❌ Информация о платеже не найдена")
-                return
-                
-            # Проверяем оплату
-            payment_success = await self.check_yoomoney_payment(payment_label)
-            
-            if payment_success:
-                # Создаем конфиг
-                client_name = f"client_{user_id}_{int(datetime.now().timestamp())}"
-                speed_limit = int(self.db.get_setting('speed_limit', 10))
-                
-                config_path = self.ovpn.create_client_config(client_name, speed_limit)
-                self.db.add_subscription(user_id, client_name, config_path, 30, speed_limit)
-                
-                # Отправляем конфиг
-                await query.message.reply_document(
-                    document=open(config_path, 'rb'),
-                    caption="✅ Оплата прошла успешно! Ваш конфигурационный файл готов.\nСрок действия: 30 дней"
-                )
-                
-                # Начисляем реферальную награду если есть
+            if rewards_claimed > 0:
+                # Находим активную подписку и продлеваем ее
                 cursor = self.db.conn.cursor()
-                cursor.execute('SELECT referred_by FROM users WHERE user_id = ?', (user_id,))
-                referrer = cursor.fetchone()
+                cursor.execute('''
+                    SELECT client_name FROM subscriptions 
+                    WHERE user_id = ? AND end_date > datetime("now")
+                    ORDER BY end_date DESC LIMIT 1
+                ''', (user_id,))
                 
-                if referrer and referrer[0]:
-                    # Добавляем дни рефереру
-                    referrer_id = referrer[0]
+                result = cursor.fetchone()
+                if result:
+                    client_name = result[0]
                     cursor.execute('''
                         UPDATE subscriptions 
-                        SET end_date = datetime(end_date, '+5 days') 
-                        WHERE user_id = ? AND end_date > datetime('now')
-                    ''', (referrer_id,))
+                        SET end_date = datetime(end_date, ?) 
+                        WHERE client_name = ?
+                    ''', (f"+{rewards_claimed * REFERRAL_REWARD_DAYS} days", client_name))
                     self.db.conn.commit()
                     
-                    # Помечаем награду как полученную
-                    cursor.execute('''
-                        UPDATE referrals 
-                        SET reward_claimed = 1 
-                        WHERE referrer_id = ? AND referred_id = ?
-                    ''', (referrer_id, user_id))
-                    self.db.conn.commit()
+                    await update.callback_query.message.reply_text(
+                        f"🎉 Поздравляем! Вы получили {rewards_claimed * REFERRAL_REWARD_DAYS} дней "
+                        f"за {rewards_claimed} приглашенных друзей!"
+                    )
+                else:
+                    # Создаем новую подписку если нет активной
+                    client_name = f"ref_{user_id}_{int(datetime.now().timestamp())}"
+                    config_path = self.ovpn.create_client_config(client_name, DEFAULT_SPEED_LIMIT)
+                    self.db.add_subscription(user_id, client_name, config_path, 
+                                           rewards_claimed * REFERRAL_REWARD_DAYS, DEFAULT_SPEED_LIMIT)
                     
-                    try:
-                        await self.application.bot.send_message(
-                            referrer_id,
-                            "🎉 Вам начислено +5 дней за реферала!"
-                        )
-                    except:
-                        pass
+                    await update.callback_query.message.reply_document(
+                        document=open(config_path, 'rb'),
+                        caption=f"🎉 Поздравляем! Вы получили {rewards_claimed * REFERRAL_REWARD_DAYS} дней "
+                               f"за {rewards_claimed} приглашенных друзей!"
+                    )
             else:
-                keyboard = [
-                    [InlineKeyboardButton("🔄 Попробовать снова", callback_data='check_payment')],
-                    [InlineKeyboardButton("🔙 Назад", callback_data='main_menu')]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.message.edit_text(
-                    "❌ Оплата не найдена. Попробуйте проверить позже или используйте пробный период.",
-                    reply_markup=reply_markup
+                await update.callback_query.message.reply_text(
+                    "❌ Нет доступных наград для получения."
                 )
                 
         except Exception as e:
-            logger.error(f"Ошибка проверки платежа: {e}")
-            await query.message.edit_text("❌ Ошибка при проверке платежа")
+            logger.error(f"Ошибка при получении награды: {e}")
+            await update.callback_query.message.reply_text("❌ Ошибка при получении награды.")
 
-    async def claim_reward_callback(self, query):
-        user_id = query.from_user.id
-        
-        # Получаем активную подписку пользователя
-        cursor = self.db.conn.cursor()
-        cursor.execute('''
-            SELECT client_name FROM subscriptions 
-            WHERE user_id = ? AND end_date > datetime("now")
-        ''', (user_id,))
-        active_sub = cursor.fetchone()
-        
-        if not active_sub:
-            await query.message.edit_text("❌ У вас нет активной подписки для получения награды")
-            return
-            
-        # Начисляем награду
-        rewards_claimed = self.db.claim_referral_reward(user_id)
-        
-        if rewards_claimed > 0:
-            # Добавляем дни к текущей подписке
-            cursor.execute('''
-                UPDATE subscriptions 
-                SET end_date = datetime(end_date, '+5 days') 
-                WHERE user_id = ? AND end_date > datetime("now")
-            ''', (user_id,))
-            self.db.conn.commit()
-            
-            await query.message.edit_text(f"🎉 Вы получили {rewards_claimed * 5} дней к вашей подписке!")
-        else:
-            await query.message.edit_text("❌ Нет доступных наград для получения.")
-
-    async def show_main_menu(self, query):
-        user = query.from_user
-        
-        keyboard = [
-            [InlineKeyboardButton("🛒 Купить доступ", callback_data='buy')],
-            [InlineKeyboardButton("📁 Мой конфиг", callback_data='myconfig')],
-            [InlineKeyboardButton("🎁 Бесплатный пробный период", callback_data='trial')],
-            [InlineKeyboardButton("👥 Реферальная программа", callback_data='referral')]
-        ]
-        
-        if self.db.is_admin(user.id):
-            keyboard.append([InlineKeyboardButton("👨‍💻 Админ панель", callback_data='admin_panel')])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.edit_text(
-            "🤖 *Главное меню*\n\nВыберите действие:",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        text = update.message.text
+    async def handle_admin_actions(self, update: Update, context: ContextTypes.DEFAULT_TYPE, action: str):
+        user_id = update.callback_query.from_user.id
         
         if not self.db.is_admin(user_id):
-            await update.message.reply_text("❌ Доступ запрещен")
+            await update.callback_query.message.reply_text("❌ У вас нет доступа.")
             return
-        
-        if 'awaiting_input' not in context.user_data:
-            return
-        
-        input_type = context.user_data['awaiting_input']
-        
+            
         try:
-            if input_type == 'change_dns':
-                dns_servers = text.split()
-                if len(dns_servers) != 2:
-                    await update.message.reply_text("❌ Неверный формат. Введите 2 DNS сервера через пробел.")
-                    return
+            if action == 'admin_stats':
+                cursor = self.db.conn.cursor()
                 
-                self.db.update_setting('dns1', dns_servers[0])
-                self.db.update_setting('dns2', dns_servers[1])
-                await update.message.reply_text(f"✅ DNS серверы изменены: {dns_servers[0]}, {dns_servers[1]}")
+                # Общая статистика
+                cursor.execute('SELECT COUNT(*) FROM users')
+                total_users = cursor.fetchone()[0]
                 
-            elif input_type == 'change_port':
-                if not text.isdigit() or not (1 <= int(text) <= 65535):
-                    await update.message.reply_text("❌ Неверный порт. Должен быть число от 1 до 65535.")
-                    return
+                cursor.execute('SELECT COUNT(*) FROM subscriptions WHERE end_date > datetime("now")')
+                active_subscriptions = cursor.fetchone()[0]
                 
-                self.db.update_setting('port', text)
-                await update.message.reply_text(f"✅ Порт изменен: {text}")
+                cursor.execute('SELECT COUNT(*) FROM referrals')
+                total_referrals = cursor.fetchone()[0]
                 
-            elif input_type == 'change_price':
-                if not text.isdigit() or int(text) <= 0:
-                    await update.message.reply_text("❌ Неверная цена. Должно быть положительное число.")
-                    return
+                cursor.execute('SELECT SUM(speed_limit) FROM subscriptions WHERE end_date > datetime("now")')
+                total_bandwidth = cursor.fetchone()[0] or 0
                 
-                self.db.update_setting('price', text)
-                await update.message.reply_text(f"✅ Цена изменена: {text} руб")
+                message_text = f"📊 *Статистика системы*\n\n"
+                message_text += f"• Всего пользователей: {total_users}\n"
+                message_text += f"• Активных подписок: {active_subscriptions}\n"
+                message_text += f"• Всего рефералов: {total_referrals}\n"
+                message_text += f"• Общая пропускная способность: {total_bandwidth} Мбит/с\n\n"
+                message_text += f"💻 Загрузка системы:\n"
                 
-            elif input_type == 'change_speed':
-                if not text.isdigit() or not (1 <= int(text) <= 1000):
-                    await update.message.reply_text("❌ Неверная скорость. Должно быть число от 1 до 1000.")
-                    return
+                # Получаем информацию о системе
+                try:
+                    load_avg = os.getloadavg()
+                    disk_usage = subprocess.check_output("df -h / | tail -1", shell=True).decode()
+                    memory_info = subprocess.check_output("free -h", shell=True).decode()
+                    
+                    message_text += f"• Load average: {load_avg[0]:.2f}, {load_avg[1]:.2f}, {load_avg[2]:.2f}\n"
+                    message_text += f"• Диск: {disk_usage.split()[4]}\n"
+                    message_text += f"• Память: {memory_info.split()[7]}/{memory_info.split()[8]}\n"
+                except:
+                    message_text += "• Не удалось получить информацию о системе\n"
                 
-                self.db.update_setting('speed_limit', text)
-                await update.message.reply_text(f"✅ Ограничение скорости изменено: {text} Мбит/с")
-            
-            elif input_type == 'change_yoomoney_wallet':
-                if not text.isdigit() or len(text) != 13:
-                    await update.message.reply_text("❌ Неверный формат кошелька. Должно быть 13 цифр.")
-                    return
+                await update.callback_query.message.reply_text(message_text, parse_mode='Markdown')
                 
-                self.db.update_setting('yoomoney_wallet', text)
-                await update.message.reply_text(f"✅ Кошелек ЮMoney изменен: {text}")
+            elif action == 'admin_users':
+                cursor = self.db.conn.cursor()
+                cursor.execute('''
+                    SELECT u.user_id, u.first_name, u.username, u.registration_date, 
+                           COUNT(s.id) as sub_count
+                    FROM users u
+                    LEFT JOIN subscriptions s ON u.user_id = s.user_id
+                    GROUP BY u.user_id
+                    ORDER BY u.registration_date DESC
+                    LIMIT 20
+                ''')
                 
-            elif input_type == 'change_yoomoney_token':
-                self.db.update_setting('yoomoney_token', text)
-                await update.message.reply_text("✅ Токен ЮMoney обновлен!")
-            
-            del context.user_data['awaiting_input']
-            await self.settings_panel_callback(update)
-            
+                users = cursor.fetchall()
+                
+                message_text = "👥 *Последние 20 пользователей*\n\n"
+                for user in users:
+                    message_text += f"• {user[1]} (@{user[2] or 'нет'}) - {user[3].split()[0]}\n"
+                    message_text += f"  ID: {user[0]}, Подписок: {user[4]}\n\n"
+                
+                await update.callback_query.message.reply_text(message_text, parse_mode='Markdown')
+                
+            elif action == 'admin_settings':
+                keyboard = [
+                    [InlineKeyboardButton("💰 Цена подписки", callback_data='setting_price')],
+                    [InlineKeyboardButton("⚡ Лимит скорости", callback_data='setting_speed')],
+                    [InlineKeyboardButton("🌐 DNS серверы", callback_data='setting_dns')],
+                    [InlineKeyboardButton("🔌 Порт OpenVPN", callback_data='setting_port')],
+                    [InlineKeyboardButton("💳 Настройки оплаты", callback_data='setting_payment')],
+                    [InlineKeyboardButton("🔙 Назад", callback_data='admin_panel')]
+                ]
+                
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.callback_query.message.reply_text(
+                    "⚙️ *Настройки системы*\n\n"
+                    "Выберите параметр для изменения:",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+                
+            elif action == 'admin_subscriptions':
+                subscriptions = self.db.get_all_subscriptions()
+                
+                message_text = "🔧 *Активные подписки*\n\n"
+                for sub in subscriptions:
+                    days_left = (datetime.strptime(sub[3], '%Y-%m-%d %H:%M:%S') - datetime.now()).days
+                    message_text += f"• {sub[5]} - {sub[1]}\n"
+                    message_text += f"  Осталось: {days_left} дней, Скорость: {sub[4]} Мбит/с\n"
+                    message_text += f"  Конфиг: {sub[2]}\n\n"
+                
+                if not subscriptions:
+                    message_text += "Нет активных подписок"
+                
+                await update.callback_query.message.reply_text(message_text, parse_mode='Markdown')
+                
+            elif action == 'admin_restart':
+                try:
+                    subprocess.run(['systemctl', 'restart', 'openvpn@server'], timeout=30)
+                    subprocess.run(['systemctl', 'restart', 'coffee-coma-vpn'], timeout=30)
+                    
+                    await update.callback_query.message.reply_text(
+                        "✅ Сервисы успешно перезапущены!\n\n"
+                        "• OpenVPN сервер\n"
+                        "• Telegram бот"
+                    )
+                except Exception as e:
+                    await update.callback_query.message.reply_text(f"❌ Ошибка при перезапуске: {str(e)}")
+                    
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-            del context.user_data['awaiting_input']
+            logger.error(f"Ошибка в админ-панели: {e}")
+            await update.callback_query.message.reply_text("❌ Ошибка при выполнении действия.")
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка текстовых сообщений для админ-панели"""
+        user_id = update.effective_user.id
+        message_text = update.message.text
+        
+        if not self.db.is_admin(user_id):
+            return
+            
+        # Здесь можно добавить логику для изменения настроек через сообщения
+        # Например: "/set price 100" - установить цену 100 рублей
+        
+        if message_text.startswith('/set '):
+            parts = message_text.split()
+            if len(parts) >= 3:
+                setting_key = parts[1]
+                setting_value = ' '.join(parts[2:])
+                
+                if setting_key in ['price', 'speed_limit', 'port', 'dns1', 'dns2', 
+                                 'yoomoney_wallet', 'cloudtips_token']:
+                    self.db.update_setting(setting_key, setting_value)
+                    await update.message.reply_text(f"✅ Настройка '{setting_key}' обновлена на '{setting_value}'")
+                else:
+                    await update.message.reply_text("❌ Неизвестная настройка")
+            else:
+                await update.message.reply_text("❌ Неправильный формат команды. Используйте: /set ключ значение")
 
     def run(self):
+        """Запуск бота"""
+        logger.info("Запуск бота...")
         self.application.run_polling()
 
 if __name__ == "__main__":
-    bot = VPNBot()
-    bot.run()
+    try:
+        bot = VPNBot()
+        bot.run()
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}")
+        print(f"Критическая ошибка: {e}")
