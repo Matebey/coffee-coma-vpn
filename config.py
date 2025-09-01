@@ -30,6 +30,9 @@ TRIAL_DAYS = 5
 DEFAULT_SPEED_LIMIT = 10
 TRIAL_SPEED_LIMIT = 5
 
+# IP сервера - ЗАМЕНИТЕ НА ВАШ IP!
+SERVER_IP = "77.239.105.17"
+
 # Создаем директории
 os.makedirs(OVPN_CLIENT_DIR, exist_ok=True)
 
