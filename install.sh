@@ -25,6 +25,7 @@ fi
 # Переменные
 INSTALL_DIR="/opt/coffee-coma-vpn"
 SERVICE_FILE="/etc/systemd/system/coffee-coma-vpn.service"
+EASYRSA_DIR="/etc/openvpn/easy-rsa"
 
 # Функция для вывода сообщений
 log() {
@@ -42,7 +43,7 @@ apt update && apt upgrade -y
 
 # Установка необходимых пакетов
 log "Установка пакетов..."
-apt install -y openvpn easy-rsa python3 python3-pip python3-venv git sqlite3 curl iptables-persistent
+apt install -y openvpn easy-rsa python3 python3-pip python3-venv git sqlite3 curl iptables-persistent net-tools
 
 # Создание директории
 log "Создание рабочей директории..."
@@ -62,8 +63,18 @@ chmod +x $INSTALL_DIR/*.sh
 
 # Настройка OpenVPN
 log "Настройка OpenVPN сервера..."
-cp -r /usr/share/easy-rsa/ /etc/openvpn/
-cd /etc/openvpn/easy-rsa/
+
+# Проверяем существование easy-rsa и копируем если нужно
+if [ ! -d "/usr/share/easy-rsa/" ]; then
+    error "Easy-RSA не установлена. Проверьте установку пакета easy-rsa."
+    exit 1
+fi
+
+if [ ! -d "$EASYRSA_DIR" ]; then
+    cp -r /usr/share/easy-rsa/ $EASYRSA_DIR
+fi
+
+cd $EASYRSA_DIR
 
 # Создаем файл vars
 cat > vars << EOF
@@ -97,16 +108,16 @@ cat > /etc/openvpn/server.conf << EOF
 port 1194
 proto udp
 dev tun
-ca /etc/openvpn/easy-rsa/pki/ca.crt
-cert /etc/openvpn/easy-rsa/pki/issued/server.crt
-key /etc/openvpn/easy-rsa/pki/private/server.key
-dh /etc/openvpn/easy-rsa/pki/dh.pem
+ca $EASYRSA_DIR/pki/ca.crt
+cert $EASYRSA_DIR/pki/issued/server.crt
+key $EASYRSA_DIR/pki/private/server.key
+dh $EASYRSA_DIR/pki/dh.pem
 server 10.8.0.0 255.255.255.0
 push "redirect-gateway def1 bypass-dhcp"
 push "dhcp-option DNS 8.8.8.8"
 push "dhcp-option DNS 8.8.4.4"
 keepalive 10 120
-tls-auth /etc/openvpn/easy-rsa/pki/ta.key 0
+tls-auth $EASYRSA_DIR/pki/ta.key 0
 cipher AES-256-CBC
 auth SHA256
 user nobody
@@ -123,7 +134,16 @@ echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
 sysctl -p
 
 # Настраиваем iptables
-iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
+# Определяем сетевой интерфейс
+NET_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+if [ -z "$NET_INTERFACE" ]; then
+    NET_INTERFACE="eth0"
+fi
+
+iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o $NET_INTERFACE -j MASQUERADE
+
+# Сохраняем правила iptables
+mkdir -p /etc/iptables/
 iptables-save > /etc/iptables/rules.v4
 
 # Создаем директорию для клиентских конфигов
@@ -134,7 +154,14 @@ log "Настройка Python окружения..."
 cd $INSTALL_DIR
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+
+# Проверяем существование requirements.txt
+if [ -f "requirements.txt" ]; then
+    pip install -r requirements.txt
+else
+    # Устанавливаем основные зависимости если файла нет
+    pip install python-telegram-bot sqlite3 python-dateutil requests
+fi
 
 # Создаем базу данных
 log "Создание базы данных..."
@@ -185,13 +212,20 @@ chmod +x /usr/local/bin/vpn-*
 # Запускаем сервисы
 log "Запуск сервисов..."
 systemctl daemon-reload
-systemctl enable openvpn@server
-systemctl start openvpn@server
+systemctl enable openvpn-server@server.service
+systemctl start openvpn-server@server.service
 systemctl enable coffee-coma-vpn
 systemctl start coffee-coma-vpn
 
+# Проверяем статус OpenVPN
+if systemctl is-active --quiet openvpn-server@server.service; then
+    log "OpenVPN сервер успешно запущен"
+else
+    error "OpenVPN сервер не запустился. Проверьте конфигурацию."
+fi
+
 # Получаем IP сервера
-SERVER_IP=$(curl -s ifconfig.me)
+SERVER_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
 
 log "Установка завершена!"
 echo -e "${YELLOW}=================================================${NC}"
@@ -210,6 +244,22 @@ echo -e "${YELLOW}=================================================${NC}"
 
 # Проверяем статусы
 echo -e "${BLUE}Статус сервисов:${NC}"
-systemctl status openvpn@server --no-pager -l
+systemctl status openvpn-server@server.service --no-pager -l
 echo ""
 systemctl status coffee-coma-vpn --no-pager -l
+
+# Создаем базовый конфиг файл если его нет
+if [ ! -f "$INSTALL_DIR/config.py" ]; then
+    cat > $INSTALL_DIR/config.py << EOF
+# Конфигурация Coffee Coma VPN Bot
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+ADMIN_ID = YOUR_ADMIN_ID
+DATABASE_PATH = "$INSTALL_DIR/vpn_bot.db"
+EOF
+    log "Создан базовый config.py. Не забудьте настроить его!"
+fi
+
+log "Для управления используйте команды:"
+echo "  vpn-admin    - Панель администратора"
+echo "  vpn-reinstall - Переустановка системы"
+echo "  vpn-update   - Обновление системы"
