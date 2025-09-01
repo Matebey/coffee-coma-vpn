@@ -7,14 +7,14 @@ import time
 BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"
 
 # Настройки ЮMoney - ЗАМЕНИТЕ НА СВОИ!
-YOOMONEY_WALLET = "ВАШ_НОМЕР_КОШЕЛЬКА"
+YOOMONEY_WALLET = "4100117852673007"
 YOOMONEY_SECRET = "ВАШ_СЕКРЕТНЫЙ_КЛЮЧ"
 
 # Настройки CloudTips - ЗАМЕНИТЕ НА СВОИ!
 CLOUDTIPS_TOKEN = "ВАШ_CLOUDTIPS_TOKEN"
 
 # Настройки OpenVPN
-OVPN_CONFIG_DIR = "/etc/openvpn/server/"
+OVPN_CONFIG_DIR = "/etc/openvpn/"
 OVPN_CLIENT_DIR = "/etc/openvpn/client-configs/"
 OVPN_KEYS_DIR = "/etc/openvpn/easy-rsa/pki/"
 
@@ -44,14 +44,11 @@ class YooMoneyAPI:
     def check_payment(self, label, amount):
         """Проверяет наличие платежа по метке"""
         try:
-            # В реальной реализации используйте официальное API ЮMoney
-            import time
-            time.sleep(2)
-            return False  # Для демо всегда возвращаем False
-            
+            # Симуляция успешного платежа для тестирования
+            return True  # Всегда возвращаем True для теста
         except Exception as e:
             print(f"Ошибка проверки платежа: {e}")
-            return False
+            return True  # Для теста всегда True
 
 class CloudTipsAPI:
     def __init__(self, token):
