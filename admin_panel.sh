@@ -13,9 +13,9 @@ DB_PATH="$INSTALL_DIR/vpn_bot.db"
 show_menu() {
     echo -e "${GREEN}"
     echo "   ______          __           ______                 ________    ____"
-    echo "  / ____/___  ____/ /_  _______/ ____/___  ____  _____/  _/   |  / __ \\"
+    echo "  / ____/___  ____/ /_  _______/ ____/___  ____  _____/ 极/   |  / __ \\"
     echo " / /   / __ \/ __  / / / / ___/ /   / __ \/ __ \/ ___// // /| | / /_/ /"
-    echo "/ /___/ /_/ / /_/ / /_/ / /__/ /___/ /_/ / / / / /  _/ // ___ |/ ____/"
+    echo "/ /___/ /_/ / /_/ / /_/ / /__/ /___/ /_/ / / / / /  _极// ___ |/ ____/"
     echo "\____/\____/\__,_/\__,_/\___/\____/\____/_/ /_/_/  /___/_/  |_/_/"
     echo -e "${NC}"
     echo -e "${BLUE}=== Coffee Coma VPN Admin Panel ===${NC}"
@@ -23,8 +23,10 @@ show_menu() {
     echo "2. 👥 Список пользователей"
     echo "3. 🔑 Управление ключами"
     echo "4. ⚙️  Настройки сервера"
-    echo "5. 🔄 Перезапустить бота"
-    echo "6. 🚪 Выход"
+    echo "5. 💳 Настройки ЮMoney"
+    echo "6. 🔄 Перезапустить бота"
+    echo "7. 🧹 Очистить просроченные подписки"
+    echo "8. 🚪 Выход"
     echo -n "Выберите опцию: "
 }
 
@@ -76,12 +78,13 @@ manage_keys() {
 
 server_settings() {
     echo -e "${YELLOW}⚙️  Настройки сервера:${NC}"
-    sqlite3 -header -column $DB_PATH "SELECT * FROM settings;"
+    sqlite3 -header -column $DB_PATH "SELECT * FROM settings WHERE key IN ('dns1', 'dns2', 'port', 'price', 'speed_limit');"
     
     echo "1. Изменить DNS"
     echo "2. Изменить порт"
     echo "3. Изменить цену"
-    echo "4. Назад"
+    echo "4. Изменить скорость"
+    echo "5. Назад"
     echo -n "Выберите опцию: "
     read option
     
@@ -107,7 +110,47 @@ server_settings() {
             sqlite3 $DB_PATH "UPDATE settings SET value='$price' WHERE key='price';"
             echo -e "${GREEN}✅ Цена обновлена!${NC}"
             ;;
+        4)
+            echo -n "Введите новую скорость: "
+            read speed
+            sqlite3 $DB_PATH "UPDATE settings SET value='$speed' WHERE key='speed_limit';"
+            echo -e "${GREEN}✅ Скорость обновлена!${NC}"
+            ;;
     esac
+    echo ""
+}
+
+yoomoney_settings() {
+    echo -e "${YELLOW}💳 Настройки ЮMoney:${NC}"
+    sqlite3 -header -column $DB_PATH "SELECT * FROM settings WHERE key IN ('yoomoney_wallet', 'yoomoney_token');"
+    
+    echo "1. Изменить кошелек"
+    echo "2. Изменить токен"
+    echo "3. Назад"
+    echo -n "Выберите опцию: "
+    read option
+    
+    case $option in
+        1)
+            echo -n "Введите номер кошелька ЮMoney: "
+            read wallet
+            sqlite3 $DB_PATH "UPDATE settings SET value='$wallet' WHERE key='yoomoney_wallet';"
+            echo -e "${GREEN}✅ Кошелек обновлен!${NC}"
+            ;;
+        2)
+            echo -n "Введите токен доступа ЮMoney: "
+            read token
+            sqlite3 $DB_PATH "UPDATE settings SET value='$token' WHERE key='yoomoney_token';"
+            echo -e "${GREEN}✅ Токен обновлен!${NC}"
+            ;;
+    esac
+    echo ""
+}
+
+cleanup_expired() {
+    echo -e "${YELLOW}🧹 Очистка просроченных подписок:${NC}"
+    cd $INSTALL_DIR
+    python3 cleanup.py
     echo ""
 }
 
@@ -120,11 +163,13 @@ while true; do
         2) list_users ;;
         3) manage_keys ;;
         4) server_settings ;;
-        5)
+        5) yoomoney_settings ;;
+        6)
             systemctl restart coffee-coma-vpn
             echo -e "${GREEN}✅ Бот перезапущен!${NC}"
             ;;
-        6) exit 0 ;;
+        7) cleanup_expired ;;
+        8) exit 0 ;;
         *) echo -e "${RED}Неверный выбор!${NC}" ;;
     esac
     
