@@ -220,38 +220,6 @@ key-direction 1
             raise Exception(f"Ошибка создания сертификата: {e.stderr.decode()}")
         except Exception as e:
             raise Exception(f"Ошибка создания конфига: {str(e)}")
-dev tun
-proto udp
-remote {SERVER_IP} 1194
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-remote-cert-tls server
-cipher AES-256-CBC
-verb 3
-<ca>
-{ca_cert}
-</ca>
-<cert>
-{client_cert}
-</cert>
-<key>
-{client_key}
-</key>
-<tls-auth>
-{ta_key}
-</tls-auth>
-key-direction 1
-'''
-
-            config_path = f"{OVPN_CLIENT_DIR}{client_name}.ovpn"
-            with open(config_path, 'w') as f:
-                f.write(config_content)
-            return config_path
-            
-        except Exception as e:
-            raise Exception(f"Ошибка создания конфига: {str(e)}")
 
 class VPNBot:
     def __init__(self):
@@ -262,14 +230,20 @@ class VPNBot:
         logger.info("Бот инициализирован")
 
     def setup_handlers(self):
+        """Настройка всех обработчиков команд"""
         self.application.add_handler(CommandHandler("start", self.start))
         self.application.add_handler(CommandHandler("buy", self.buy))
         self.application.add_handler(CommandHandler("myconfig", self.my_config))
         self.application.add_handler(CommandHandler("admin", self.admin_panel))
         self.application.add_handler(CommandHandler("trial", self.trial))
         self.application.add_handler(CommandHandler("referral", self.referral))
-        self.application.add_handler(CommandHandler("stop", self.stop_bot))
+        self.application.add_handler(CommandHandler("startbot", self.start_bot))
+        self.application.add_handler(CommandHandler("stopbot", self.stop_bot))
+        self.application.add_handler(CommandHandler("status", self.status))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
+        
+        # Обработчик для любых сообщений
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -281,6 +255,7 @@ class VPNBot:
             referral_code = self.db.add_user(user.id, user.first_name, user.username, referred_by)
             await self.show_main_menu(update.message, user, referral_code)
         except Exception as e:
+            logger.error(f"Ошибка в start: {e}")
             await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
     async def show_main_menu(self, message, user, referral_code=None):
@@ -290,10 +265,12 @@ class VPNBot:
             [InlineKeyboardButton("🎁 7 дней пробный период", callback_data='trial')],
             [InlineKeyboardButton("👥 Реферальная программа", callback_data='referral')]
         ]
+        
         if self.db.is_admin(user.id):
             keyboard.append([InlineKeyboardButton("👨‍💻 Админ панель", callback_data='admin_panel')])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
+        
         message_text = f"Привет, {user.first_name}! 👋\n\n🤖 Coffee Coma VPN\n\n"
         
         if referral_code:
@@ -302,6 +279,7 @@ class VPNBot:
             message_text += f"📋 Реферальный код: `{referral_code}`\n🔗 Ссылка: {referral_link}\n\n"
         
         message_text += "Выберите действие:"
+        
         await message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
 
     async def trial(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,6 +298,7 @@ class VPNBot:
                 caption=f"🎉 Пробный период на 7 дней!\n⚡ Скорость: {TRIAL_SPEED_LIMIT} Мбит/с\n🌐 Сервер: {SERVER_IP}"
             )
         except Exception as e:
+            logger.error(f"Ошибка в trial: {e}")
             await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
     async def admin_panel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,19 +309,98 @@ class VPNBot:
         
         keyboard = [
             [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
-            [InlineKeyboardButton("🔄 Перезапустить", callback_data='admin_restart')],
-            [InlineKeyboardButton("⏹ Остановить", callback_data='admin_stop')]
+            [InlineKeyboardButton("🔄 Перезапустить бота", callback_data='admin_restart')],
+            [InlineKeyboardButton("⏹ Остановить бота", callback_data='admin_stop')],
+            [InlineKeyboardButton("🔧 Перезапустить OpenVPN", callback_data='admin_restart_ovpn')]
         ]
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("👨‍💻 Админ-панель:", reply_markup=reply_markup)
+
+    async def start_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not self.db.is_admin(user_id):
+            await update.message.reply_text("❌ Доступ запрещен.")
+            return
+        
+        subprocess.run(["systemctl", "start", "coffee-coma-vpn.service"])
+        await update.message.reply_text("✅ Бот запущен")
 
     async def stop_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         if not self.db.is_admin(user_id):
             await update.message.reply_text("❌ Доступ запрещен.")
             return
-        await update.message.reply_text("🛑 Останавливаю бота...")
-        os._exit(0)
+        
+        subprocess.run(["systemctl", "stop", "coffee-coma-vpn.service"])
+        await update.message.reply_text("✅ Бот остановлен")
+
+    async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not self.db.is_admin(user_id):
+            await update.message.reply_text("❌ Доступ запрещен.")
+            return
+        
+        bot_status = subprocess.run(["systemctl", "is-active", "coffee-coma-vpn.service"], capture_output=True, text=True).stdout.strip()
+        ovpn_status = subprocess.run(["systemctl", "is-active", "openvpn@server.service"], capture_output=True, text=True).stdout.strip()
+        
+        await update.message.reply_text(
+            f"📊 Статус системы:\n\n"
+            f"🤖 Бот: {bot_status}\n"
+            f"🔌 OpenVPN: {ovpn_status}\n"
+            f"🌐 IP: {SERVER_IP}\n"
+            f"🚪 Порт: 1194"
+        )
+
+    async def buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text(
+            "💰 Тарифы:\n\n"
+            "• 1 месяц - 50 руб\n"
+            "• 3 месяца - 120 руб\n"
+            "• 6 месяцев - 200 руб\n\n"
+            "💳 Оплата через CloudTips"
+        )
+
+    async def my_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        config_path = self.db.get_user_config(user_id)
+        
+        if config_path and os.path.exists(config_path):
+            await update.message.reply_document(
+                document=open(config_path, 'rb'),
+                caption="📁 Ваш конфиг OpenVPN"
+            )
+        else:
+            await update.message.reply_text("❌ У вас нет активной подписки.")
+
+    async def referral(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        cursor = self.db.conn.cursor()
+        cursor.execute('SELECT referral_code FROM users WHERE user_id = ?', (user_id,))
+        result = cursor.fetchone()
+        
+        if result:
+            referral_code = result[0]
+            bot_username = (await self.application.bot.get_me()).username
+            referral_link = f"https://t.me/{bot_username}?start={referral_code}"
+            
+            await update.message.reply_text(
+                f"👥 Реферальная программа\n\n"
+                f"🔗 Ваша ссылка: {referral_link}\n"
+                f"📋 Код: `{referral_code}`\n\n"
+                f"💎 За каждого приглашенного друга вы получаете +7 дней к подписке!",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text("❌ Ошибка получения реферальной информации.")
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка обычных сообщений"""
+        message_text = update.message.text
+        if message_text == "админ":
+            await self.admin_panel(update, context)
+        else:
+            await update.message.reply_text("Используйте команды из меню 📋")
 
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -355,11 +413,22 @@ class VPNBot:
             await self.admin_panel(update, context)
         elif data == 'admin_stop':
             await self.stop_bot(update, context)
+        elif data == 'admin_restart':
+            await update.message.reply_text("🔄 Перезапускаю бота...")
+            os.system("systemctl restart coffee-coma-vpn.service")
+        elif data == 'admin_restart_ovpn':
+            await update.message.reply_text("🔄 Перезапускаю OpenVPN...")
+            os.system("pkill openvpn && sleep 2 && /usr/sbin/openvpn --config /etc/openvpn/server.conf --daemon")
+        elif data == 'admin_stats':
+            await self.status(update, context)
 
     def run(self):
+        logger.info("Запуск бота...")
         self.application.run_polling()
 
 if __name__ == "__main__":
-    bot = VPNBot()
-
-    bot.run()
+    try:
+        bot = VPNBot()
+        bot.run()
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}")
