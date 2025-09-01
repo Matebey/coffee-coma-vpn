@@ -5,31 +5,16 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}"
-echo "   ______          __           ______                 ________    ____"
-echo "  / ____/___  ____/ /_  _______/ ____/___  ____  _____/  _/   |  / __ \\"
-echo " / /   / __ \/ __  / / / / ___/ /   / __ \/ __ \/ ___// // /| | / /_/ /"
-echo "/ /___/ /_/ / /_/ / /_/ / /__/ /___/ /_/ / / / / /  _/ // ___ |/ ____/"
-echo "\____/\____/\__,_/\__,_/\___/\____/\____/_/ /_/_/  /___/_/  |_/_/"
-echo -e "${NC}"
-echo -e "${BLUE}=== Coffee Coma VPN Auto Installer ===${NC}"
-
-# Проверка на root
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Пожалуйста, запустите скрипт с правами root: sudo ./install.sh${NC}"
-    exit 1
-fi
-
-# Переменные
-INSTALL_DIR="/opt/coffee-coma-vpn"
-SERVICE_FILE="/etc/systemd/system/coffee-coma-vpn.service"
-EASYRSA_DIR="/etc/openvpn/easy-rsa"
-
-# Функция для вывода сообщений
+# Функции для вывода сообщений
 log() {
     echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
 error() {
@@ -37,44 +22,73 @@ error() {
     exit 1
 }
 
+echo -e "${GREEN}"
+cat << "EOF"
+   ______          __           ______                 ________    ____
+  / ____/___  ____/ /_  _______/ ____/___  ____  _____/  _/   |  / __ \
+ / /   / __ \/ __  / / / / ___/ /   / __ \/ __ \/ ___// // /| | / /_/ /
+/ /___/ /_/ / /_/ / /_/ / /__/ /___/ /_/ / / / / /  _/ // ___ |/ ____/
+\____/\____/\__,_/\__,_/\___/\____/\____/_/ /_/_/  /___/_/  |_/_/
+EOF
+echo -e "${NC}"
+echo -e "${BLUE}=== Coffee Coma VPN Auto Installer ===${NC}"
+echo -e "${CYAN}Начинается процесс установки...${NC}"
+
+# Проверка на root
+if [ "$EUID" -ne 0 ]; then
+    error "Пожалуйста, запустите скрипт с правами root: sudo ./install.sh"
+fi
+
+# Переменные
+INSTALL_DIR="/opt/coffee-coma-vpn"
+SERVICE_FILE="/etc/systemd/system/coffee-coma-vpn.service"
+EASYRSA_DIR="/etc/openvpn/easy-rsa"
+OVPN_DIR="/etc/openvpn"
+SERVER_CONF="$OVPN_DIR/server.conf"
+
+# Определяем сетевой интерфейс по умолчанию
+DEFAULT_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+if [ -z "$DEFAULT_INTERFACE" ]; then
+    DEFAULT_INTERFACE="eth0"
+    warn "Не удалось определить сетевой интерфейс, используем '$DEFAULT_INTERFACE'"
+fi
+
 # Обновление системы
-log "Обновление системы..."
-apt update && apt upgrade -y
+log "Обновление списка пакетов..."
+apt-get update > /dev/null 2>&1 || warn "Не удалось обновить список пакетов"
+
+log "Обновление системы (это может занять время)..."
+apt-get upgrade -y > /dev/null 2>&1 || warn "Не удалось обновить пакеты"
 
 # Установка необходимых пакетов
-log "Установка пакетов..."
-apt install -y openvpn easy-rsa python3 python3-pip python3-venv git sqlite3 curl iptables-persistent net-tools
+log "Установка необходимых пакетов..."
+apt-get install -y openvpn easy-rsa python3 python3-pip python3-venv git sqlite3 curl iptables-persistent net-tools > /dev/null 2>&1 || error "Не удалось установить пакеты"
 
-# Создание директории
-log "Создание рабочей директории..."
+# Создание рабочей директории
+log "Создание рабочей директории: $INSTALL_DIR"
 mkdir -p $INSTALL_DIR
-cd $INSTALL_DIR
+cd $INSTALL_DIR || error "Не удалось перейти в директорию $INSTALL_DIR"
 
-# Клонирование репозитория или копирование файлов
-if [ -d "/root/coffee-coma-vpn" ]; then
-    log "Копирование файлов из локальной директории..."
-    cp -rf /root/coffee-coma-vpn/* $INSTALL_DIR/
-else
-    log "Скачивание файлов с GitHub..."
-    git clone https://github.com/your-repo/coffee-coma-vpn.git .
+# Копирование файлов (предполагается, что скрипт запускается из директории с файлами проекта)
+log "Копирование файлов проекта..."
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
+    cp -r "$SCRIPT_DIR"/* "$INSTALL_DIR"/ > /dev/null 2>&1 || warn "Не удалось скопировать некоторые файлы"
 fi
+chmod +x $INSTALL_DIR/*.sh > /dev/null 2>&1
 
-chmod +x $INSTALL_DIR/*.sh
-
-# Настройка OpenVPN
+# Настройка OpenVPN и Easy-RSA
 log "Настройка OpenVPN сервера..."
 
-# Проверяем существование easy-rsa и копируем если нужно
-if [ ! -d "/usr/share/easy-rsa/" ]; then
-    error "Easy-RSA не установлена. Проверьте установку пакета easy-rsa."
-    exit 1
+# Копируем easy-rsa в /etc/openvpn/
+if [ -d "/usr/share/easy-rsa/" ]; then
+    rm -rf $EASYRSA_DIR > /dev/null 2>&1
+    cp -r /usr/share/easy-rsa/ $EASYRSA_DIR > /dev/null 2>&1 || error "Не удалось скопировать easy-rsa"
+else
+    error "Директория /usr/share/easy-rsa/ не найдена. Установите пакет easy-rsa."
 fi
 
-if [ ! -d "$EASYRSA_DIR" ]; then
-    cp -r /usr/share/easy-rsa/ $EASYRSA_DIR
-fi
-
-cd $EASYRSA_DIR
+cd $EASYRSA_DIR || error "Не удалось перейти в $EASYRSA_DIR"
 
 # Создаем файл vars
 cat > vars << EOF
@@ -91,20 +105,27 @@ set_var EASYRSA_CERT_EXPIRE    365
 set_var EASYRSA_CRL_DAYS       180
 EOF
 
-# Инициализируем PKI
-./easyrsa --batch init-pki
-./easyrsa --batch build-ca nopass
+# Инициализируем PKI и генерируем CA
+log "Инициализация PKI и генерация CA..."
+./easyrsa --batch init-pki > /dev/null 2>&1 || error "Ошибка инициализации PKI"
+./easyrsa --batch build-ca nopass > /dev/null 2>&1 || error "Ошибка генерации CA"
 
 # Генерируем серверный сертификат
-./easyrsa --batch gen-req server nopass
-./easyrsa --batch sign-req server server
+log "Генерация серверного сертификата..."
+./easyrsa --batch gen-req server nopass > /dev/null 2>&1 || error "Ошибка генерации запроса сертификата"
+./easyrsa --batch sign-req server server > /dev/null 2>&1 || error "Ошибка подписи сертификата"
 
-# Генерируем DH параметры и TLS ключ
-./easyrsa --batch gen-dh
-openvpn --genkey --secret pki/ta.key
+# Генерируем DH параметры
+log "Генерация DH параметров (это займет время)..."
+./easyrsa --batch gen-dh > /dev/null 2>&1 || error "Ошибка генерации DH параметров"
 
-# Создаем конфигурацию сервера
-cat > /etc/openvpn/server.conf << EOF
+# Генерируем TLS ключ
+log "Генерация TLS ключа..."
+openvpn --genkey --secret $EASYRSA_DIR/pki/ta.key > /dev/null 2>&1 || error "Ошибка генерации TLS ключа"
+
+# Создаем конфигурацию сервера (ПРАВИЛЬНАЯ ВЕРСИЯ)
+log "Создание конфигурации OpenVPN сервера..."
+cat > $SERVER_CONF << EOF
 port 1194
 proto udp
 dev tun
@@ -117,7 +138,7 @@ push "redirect-gateway def1 bypass-dhcp"
 push "dhcp-option DNS 8.8.8.8"
 push "dhcp-option DNS 8.8.4.4"
 keepalive 10 120
-tls-auth $EASYRSA_DIR/pki/ta.key 0
+tls-crypt $EASYRSA_DIR/pki/ta.key
 cipher AES-256-CBC
 auth SHA256
 user nobody
@@ -125,24 +146,23 @@ group nogroup
 persist-key
 persist-tun
 status /var/log/openvpn-status.log
+log /var/log/openvpn.log
 verb 3
 explicit-exit-notify 1
 EOF
 
 # Включаем IP forwarding
+log "Включение IP forwarding..."
+sed -i '/net.ipv4.ip_forward=1/d' /etc/sysctl.conf
 echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
-sysctl -p
+sysctl -p > /dev/null 2>&1
 
 # Настраиваем iptables
-# Определяем сетевой интерфейс
-NET_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
-if [ -z "$NET_INTERFACE" ]; then
-    NET_INTERFACE="eth0"
-fi
-
-iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o $NET_INTERFACE -j MASQUERADE
+log "Настройка iptables..."
+iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o $DEFAULT_INTERFACE -j MASQUERADE
 
 # Сохраняем правила iptables
+log "Сохранение правил iptables..."
 mkdir -p /etc/iptables/
 iptables-save > /etc/iptables/rules.v4
 
@@ -151,33 +171,33 @@ mkdir -p /etc/openvpn/client-configs/
 
 # Настройка Python окружения
 log "Настройка Python окружения..."
-cd $INSTALL_DIR
-python3 -m venv venv
+cd $INSTALL_DIR || error "Не удалось перейти в $INSTALL_DIR"
+python3 -m venv venv > /dev/null 2>&1 || error "Ошибка создания виртуального окружения"
 source venv/bin/activate
 
-# Проверяем существование requirements.txt
+# Устанавливаем зависимости Python
 if [ -f "requirements.txt" ]; then
-    pip install -r requirements.txt
+    log "Установка зависимых Python пакетов из requirements.txt..."
+    pip install -r requirements.txt > /dev/null 2>&1 || warn "Не удалось установить некоторые зависимости"
 else
-    # Устанавливаем основные зависимости если файла нет
-    pip install python-telegram-bot sqlite3 python-dateutil requests
+    log "Установка основных Python пакетов..."
+    pip install python-telegram-bot requests > /dev/null 2>&1 || warn "Не удалось установить некоторые зависимости"
 fi
 
 # Создаем базу данных
-log "Создание базы данных..."
-sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, referral_code TEXT UNIQUE, referred_by INTEGER, trial_used INTEGER DEFAULT 0);"
-sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, client_name TEXT UNIQUE, config_path TEXT, start_date TIMESTAMP, end_date TIMESTAMP, speed_limit INTEGER DEFAULT 10, is_trial INTEGER DEFAULT 0, FOREIGN KEY (user_id) REFERENCES users (user_id));"
-sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);"
-sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS referrals (referral_id INTEGER PRIMARY KEY AUTOINCREMENT, referrer_id INTEGER, referred_id INTEGER, reward_claimed INTEGER DEFAULT 0, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (referrer_id) REFERENCES users (user_id), FOREIGN KEY (referred_id) REFERENCES users (user_id));"
+log "Создание и настройка базы данных..."
+sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, referral_code TEXT UNIQUE, referred_by INTEGER, trial_used INTEGER DEFAULT 0);" || error "Ошибка создания таблицы users"
+sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, client_name TEXT UNIQUE, config_path TEXT, start_date TIMESTAMP, end_date TIMESTAMP, speed_limit INTEGER DEFAULT 10, is_trial INTEGER DEFAULT 0, FOREIGN KEY (user_id) REFERENCES users (user_id));" || error "Ошибка создания таблицы subscriptions"
+sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);" || error "Ошибка создания таблицы settings"
+sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS referrals (referral_id INTEGER PRIMARY KEY AUTOINCREMENT, referrer_id INTEGER, referred_id INTEGER, reward_claimed INTEGER DEFAULT 0, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (referrer_id) REFERENCES users (user_id), FOREIGN KEY (referred_id) REFERENCES users (user_id));" || error "Ошибка создания таблицы referrals"
 
 # Добавляем настройки по умолчанию
-sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('dns1', '8.8.8.8');"
-sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('dns2', '8.8.4.4');"
-sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('port', '1194');"
-sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('price', '50');"
-sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('speed_limit', '10');"
-sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('yoomoney_wallet', '4100117852673007');"
-sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('cloudtips_token', 'ВАШ_CLOUDTIPS_TOKEN');"
+sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings (key, value) VALUES ('dns1', '8.8.8.8');"
+sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings (key, value) VALUES ('dns2', '8.8.4.4');"
+sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings (key, value) VALUES ('port', '1194');"
+sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings (key, value) VALUES ('price', '50');"
+sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings (key, value) VALUES ('speed_limit', '10');"
+sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings (key, value) VALUES ('yoomoney_wallet', '4100117852673007');"
 
 # Создаем service файл
 log "Создание systemd service..."
@@ -201,7 +221,7 @@ EOF
 
 # Даем права
 chmod 644 $SERVICE_FILE
-chmod +x $INSTALL_DIR/*.sh
+chmod +x $INSTALL_DIR/*.sh > /dev/null 2>&1
 
 # Создаем симлинки для удобства
 ln -sf $INSTALL_DIR/admin_panel.sh /usr/local/bin/vpn-admin
@@ -212,20 +232,27 @@ chmod +x /usr/local/bin/vpn-*
 # Запускаем сервисы
 log "Запуск сервисов..."
 systemctl daemon-reload
-systemctl enable openvpn-server@server.service
-systemctl start openvpn-server@server.service
-systemctl enable coffee-coma-vpn
+systemctl enable openvpn > /dev/null 2>&1
+systemctl start openvpn > /dev/null 2>&1
+systemctl enable coffee-coma-vpn > /dev/null 2>&1
 systemctl start coffee-coma-vpn
 
 # Проверяем статус OpenVPN
-if systemctl is-active --quiet openvpn-server@server.service; then
+if systemctl is-active --quiet openvpn; then
     log "OpenVPN сервер успешно запущен"
 else
-    error "OpenVPN сервер не запустился. Проверьте конфигурацию."
+    warn "OpenVPN сервер не запустился. Проверьте конфигурацию: $SERVER_CONF"
+fi
+
+# Проверяем статус бота
+if systemctl is-active --quiet coffee-coma-vpn; then
+    log "Telegram бот успешно запущен"
+else
+    warn "Telegram бот не запустился. Проверьте конфигурацию."
 fi
 
 # Получаем IP сервера
-SERVER_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+SERVER_IP=$(curl -s -4 ifconfig.me || hostname -I | awk '{print $1}' | head -n1)
 
 log "Установка завершена!"
 echo -e "${YELLOW}=================================================${NC}"
@@ -234,19 +261,14 @@ echo -e "${GREEN}✅ Telegram бот установлен${NC}"
 echo -e "${GREEN}✅ Systemd service создан${NC}"
 echo -e "${YELLOW}=================================================${NC}"
 echo -e "${BLUE}Следующие шаги:${NC}"
-echo "1. Отредактируйте конфиг: nano /opt/coffee-coma-vpn/config.py"
+echo "1. Отредактируйте конфиг: nano $INSTALL_DIR/config.py"
 echo "2. Укажите ваш Telegram ID и токен бота"
 echo "3. Перезапустите бота: systemctl restart coffee-coma-vpn"
 echo -e "${YELLOW}=================================================${NC}"
 echo -e "${GREEN}IP вашего сервера: $SERVER_IP${NC}"
 echo -e "${GREEN}Порт OpenVPN: 1194${NC}"
+echo -e "${GREEN}Сетевой интерфейс: $DEFAULT_INTERFACE${NC}"
 echo -e "${YELLOW}=================================================${NC}"
-
-# Проверяем статусы
-echo -e "${BLUE}Статус сервисов:${NC}"
-systemctl status openvpn-server@server.service --no-pager -l
-echo ""
-systemctl status coffee-coma-vpn --no-pager -l
 
 # Создаем базовый конфиг файл если его нет
 if [ ! -f "$INSTALL_DIR/config.py" ]; then
@@ -263,3 +285,9 @@ log "Для управления используйте команды:"
 echo "  vpn-admin    - Панель администратора"
 echo "  vpn-reinstall - Переустановка системы"
 echo "  vpn-update   - Обновление системы"
+
+echo -e "${CYAN}"
+echo "Проверьте статус сервисов:"
+echo "  systemctl status openvpn"
+echo "  systemctl status coffee-coma-vpn"
+echo -e "${NC}"
