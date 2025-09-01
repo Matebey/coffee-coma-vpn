@@ -10,9 +10,9 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}"
 echo "   ______          __           ______                 ________    ____"
 echo "  / ____/___  ____/ /_  _______/ ____/___  ____  _____/  _/   |  / __ \\"
-echo " / /   / __ \/ __  / / / / ___/ /   / __ \/ __ \/ ___// / /| | / /_/ /"
-echo "/ /___/ /_/ / /_/ / /_/ / /__/ /___/ /_/ / / / / /  / / ___ |/ ____/"
-echo "\____/\____/\__,_/\__,_/\___/\____/\____/_/ /_/_/  /_/_/  |_/_/"
+echo " / /   / __ \/ __  / / / / ___/ /   / __ \/ __ \/ ___// // /| | / /_/ /"
+echo "/ /___/ /_/ / /_/ / /_/ / /__/ /___/ /_/ / / / / /  _/ // ___ |/ ____/"
+echo "\____/\____/\__,_/\__,_/\___/\____/\____/_/ /_/_/  /___/_/  |_/_/"
 echo -e "${NC}"
 echo -e "${BLUE}=== Coffee Coma VPN Auto Installer ===${NC}"
 
@@ -25,9 +25,6 @@ fi
 # Переменные
 INSTALL_DIR="/opt/coffee-coma-vpn"
 SERVICE_FILE="/etc/systemd/system/coffee-coma-vpn.service"
-BOT_TOKEN="7953514140:AAGg-AgyL6Y2mvzfyKesnpouJkU6p_B8Zeo"
-ADMIN_ID="5631675412"
-SERVER_IP="77.239.105.17"
 
 # Функция для вывода сообщений
 log() {
@@ -52,10 +49,16 @@ log "Создание рабочей директории..."
 mkdir -p $INSTALL_DIR
 cd $INSTALL_DIR
 
-# Клонирование репозитория
-log "Клонирование репозитория..."
-git clone https://github.com/Matebey/coffee-coma-vpn.git .
-chmod +x *.sh
+# Клонирование репозитория или копирование файлов
+if [ -d "/root/coffee-coma-vpn" ]; then
+    log "Копирование файлов из локальной директории..."
+    cp -rf /root/coffee-coma-vpn/* $INSTALL_DIR/
+else
+    log "Скачивание файлов с GitHub..."
+    git clone https://github.com/your-repo/coffee-coma-vpn.git .
+fi
+
+chmod +x $INSTALL_DIR/*.sh
 
 # Настройка OpenVPN
 log "Настройка OpenVPN сервера..."
@@ -121,9 +124,6 @@ sysctl -p
 
 # Настраиваем iptables
 iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
-iptables -A INPUT -p udp --dport 1194 -j ACCEPT
-iptables -A FORWARD -s 10.8.0.0/24 -j ACCEPT
-iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
 iptables-save > /etc/iptables/rules.v4
 
 # Создаем директорию для клиентских конфигов
@@ -139,9 +139,9 @@ pip install -r requirements.txt
 # Создаем базу данных
 log "Создание базы данных..."
 sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, referral_code TEXT UNIQUE, referred_by INTEGER, trial_used INTEGER DEFAULT 0);"
-sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, client_name TEXT UNIQUE, config_path TEXT, start_date TIMESTAMP, end_date TIMESTAMP, speed_limit INTEGER DEFAULT 10, is_trial INTEGER DEFAULT 0);"
+sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, client_name TEXT UNIQUE, config_path TEXT, start_date TIMESTAMP, end_date TIMESTAMP, speed_limit INTEGER DEFAULT 10, is_trial INTEGER DEFAULT 0, FOREIGN KEY (user_id) REFERENCES users (user_id));"
 sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);"
-sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS referrals (referral_id INTEGER PRIMARY KEY AUTOINCREMENT, referrer_id INTEGER, referred_id INTEGER, reward_claimed INTEGER DEFAULT 0, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
+sqlite3 $INSTALL_DIR/vpn_bot.db "CREATE TABLE IF NOT EXISTS referrals (referral_id INTEGER PRIMARY KEY AUTOINCREMENT, referrer_id INTEGER, referred_id INTEGER, reward_claimed INTEGER DEFAULT 0, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (referrer_id) REFERENCES users (user_id), FOREIGN KEY (referred_id) REFERENCES users (user_id));"
 
 # Добавляем настройки по умолчанию
 sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('dns1', '8.8.8.8');"
@@ -150,11 +150,7 @@ sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('port', 
 sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('price', '50');"
 sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('speed_limit', '10');"
 sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('yoomoney_wallet', '4100117852673007');"
-sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('yoomoney_token', '');"
-
-# Обновляем конфиг бота с вашими настройками
-sed -i "s/BOT_TOKEN = \"ВАШ_ТОКЕН_БОТА\"/BOT_TOKEN = \"$BOT_TOKEN\"/g" vpn_bot.py
-sed -i "s/ADMINS = \[ВАШ_TELEGRAM_ID\]/ADMINS = [$ADMIN_ID]/g" vpn_bot.py
+sqlite3 $INSTALL_DIR/vpn_bot.db "INSERT OR IGNORE INTO settings VALUES ('cloudtips_token', 'ВАШ_CLOUDTIPS_TOKEN');"
 
 # Создаем service файл
 log "Создание systemd service..."
@@ -194,11 +190,8 @@ systemctl start openvpn@server
 systemctl enable coffee-coma-vpn
 systemctl start coffee-coma-vpn
 
-# Создаем директорию для скриптов ограничения скорости
-mkdir -p /etc/openvpn/client-speed/
-
-# Добавляем задание cron для очистки просроченных подписок
-(crontab -l 2>/dev/null; echo "0 3 * * * $INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/cleanup_expired.py") | crontab -
+# Получаем IP сервера
+SERVER_IP=$(curl -s ifconfig.me)
 
 log "Установка завершена!"
 echo -e "${YELLOW}=================================================${NC}"
@@ -207,9 +200,9 @@ echo -e "${GREEN}✅ Telegram бот установлен${NC}"
 echo -e "${GREEN}✅ Systemd service создан${NC}"
 echo -e "${YELLOW}=================================================${NC}"
 echo -e "${BLUE}Следующие шаги:${NC}"
-echo "1. Проверьте статус бота: systemctl status coffee-coma-vpn"
-echo "2. Используйте админ панель: vpn-admin"
-echo "3. Настройте ЮMoney в админ-панели бота"
+echo "1. Отредактируйте конфиг: nano /opt/coffee-coma-vpn/config.py"
+echo "2. Укажите ваш Telegram ID и токен бота"
+echo "3. Перезапустите бота: systemctl restart coffee-coma-vpn"
 echo -e "${YELLOW}=================================================${NC}"
 echo -e "${GREEN}IP вашего сервера: $SERVER_IP${NC}"
 echo -e "${GREEN}Порт OpenVPN: 1194${NC}"
