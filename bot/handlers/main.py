@@ -130,15 +130,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle regular text messages"""
-    user_id = update.effective_user.id
+    # Пропускаем сообщения от админов (они обрабатываются отдельно)
+    if update.effective_user.id in Config.ADMIN_IDS:
+        return
     
-    # Если пользователь в процессе оплаты, обрабатываем специально
+    # Если пользователь в процессе оплаты, можно добавить специальную логику
     if context.user_data.get('waiting_payment'):
-        # Логика обработки платежа
-        pass
-    else:
-        # Отправляем главное меню для любых сообщений
-        await main_menu(update, context)
+        # Здесь можно обработать специальные сообщения во время оплаты
+        await update.message.reply_text("⏳ Ваш платеж обрабатывается. Пожалуйста, подождите...")
+        return
+    
+    # Для всех остальных сообщений показываем главное меню
+    await main_menu(update, context)
 
 
 async def show_plans(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
