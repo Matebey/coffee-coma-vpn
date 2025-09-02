@@ -1,17 +1,19 @@
-from aiogram import Dispatcher, types
-from aiogram.dispatcher import FSMContext
-from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram import Router, types
+from aiogram.filters import Command
+from aiogram.types import Message
 
 from bot.database.models import User, Referral
 from bot.keyboards.main import get_main_keyboard
 
+router = Router()
+
+@router.message(Command("start"))
 async def start_command(message: Message):
     """Обработка команды /start"""
     user_id = message.from_user.id
     user = await User.get(user_id)
     
     if not user:
-        # Новый пользователь
         user = await User.create(
             id=user_id,
             username=message.from_user.username,
@@ -19,7 +21,6 @@ async def start_command(message: Message):
             last_name=message.from_user.last_name
         )
         
-        # Проверка реферальной ссылки
         if len(message.text.split()) > 1:
             ref_code = message.text.split()[1]
             if ref_code.startswith('ref'):
@@ -34,16 +35,16 @@ async def start_command(message: Message):
     
     await message.answer(
         f"👋 Добро пожаловать, {message.from_user.first_name}!\n\n"
-        "🚀 Это VPN бот для безопасного и анонимного серфинга в интернете.\n\n"
+        "🚀 Это VPN бот для безопасного и анонимного серфинга.\n\n"
         "📋 Доступные команды:\n"
         "• /buy - Купить VPN\n"
         "• /my - Мои подписки\n"
         "• /referral - Реферальная программа\n"
         "• /help - Помощь",
-        reply_markup=get_main_keyboard(),
-        parse_mode=types.ParseMode.HTML
+        reply_markup=get_main_keyboard()
     )
 
+@router.message(Command("help"))
 async def help_command(message: Message):
     """Обработка команды /help"""
     await message.answer(
@@ -55,11 +56,5 @@ async def help_command(message: Message):
         "4. Импортируйте конфиг файл\n"
         "5. Подключайтесь к VPN!\n\n"
         "💳 <b>Оплата:</b> Принимаем карты, крипту\n"
-        "👥 <b>Рефералы:</b> Получайте 10% с покупок\n\n"
-        "📞 <b>Поддержка:</b> @your_support",
-        parse_mode=types.ParseMode.HTML
+        "👥 <b>Рефералы:</b> Получайте 10% с покупок"
     )
-
-def register_start_handlers(dp: Dispatcher):
-    dp.register_message_handler(start_command, commands=['start'])
-    dp.register_message_handler(help_command, commands=['help'])
