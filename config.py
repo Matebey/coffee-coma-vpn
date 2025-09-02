@@ -16,8 +16,8 @@ class Config:
     OPENVPN_API_URL = os.getenv('OPENVPN_API_URL')
     OPENVPN_API_KEY = os.getenv('OPENVPN_API_KEY')
     
-    # Database
-    DB_URL = os.getenv('DB_URL', 'sqlite:///bot.db')
+    # Database - используем async SQLite
+    DB_URL = os.getenv('DB_URL', 'sqlite+aiosqlite:///bot.db')
     
     # Referral
     REFERRAL_PERCENT = float(os.getenv('REFERRAL_PERCENT', 0.1))
