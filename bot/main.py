@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.config.settings import Config
 from bot.handlers.main import (
-    start_command,
+    start_command,  # УБЕДИТЕСЬ ЧТО ЭТО ИМПОРТИРУЕТСЯ
     show_plans,
     select_payment_method,
     process_payment,
@@ -86,7 +86,7 @@ def create_application() -> Application:
     )
     
     # Main command handlers
-    application.add_handler(CommandHandler('start', start_command))
+    application.add_handler(CommandHandler('start', start_command))  # ЭТО ДОБАВЛЕНО
     application.add_handler(CommandHandler('menu', main_menu))
     application.add_handler(CommandHandler('help', show_help))
     application.add_handler(CommandHandler('support', show_support))
