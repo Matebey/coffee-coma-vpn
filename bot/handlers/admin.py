@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from sqlalchemy import func, desc
 
-from bot.models.database import DatabaseManager, User, Subscription, Payment
+from bot.models.database import DatabaseManager, User, Subscription, Payment, VPNKey, BotStats
 from bot.config.settings import Config
 from bot.utils.helpers import (
     is_admin, 
@@ -64,6 +64,9 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         ).scalar() or 0
         monthly_revenue = monthly_revenue / 100  # Convert from kopecks
         
+        # Available VPN keys
+        available_keys = session.query(VPNKey).filter(VPNKey.is_used == False).count()
+        
         # New users today
         new_users = session.query(User).filter(
             User.created_at >= today
@@ -74,6 +77,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             active_subscriptions=active_subscriptions,
             daily_revenue=int(daily_revenue),
             monthly_revenue=int(monthly_revenue),
+            available_keys=available_keys,
             new_users=new_users,
             last_update=format_datetime(datetime.utcnow())
         )
@@ -84,10 +88,15 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')
             ],
             [
-                InlineKeyboardButton("💰 Платежи", callback_data='admin_payments'),
-                InlineKeyboardButton("📢 Рассылка", callback_data='admin_broadcast')
+                InlineKeyboardButton("🔑 VPN ключи", callback_data='admin_keys'),
+                InlineKeyboardButton("💰 Платежи", callback_data='admin_payments')
             ],
             [
+                InlineKeyboardButton("📢 Рассылка", callback_data='admin_broadcast'),
+                InlineKeyboardButton("📋 Логи", callback_data='admin_logs')
+            ],
+            [
+                InlineKeyboardButton("⚙️ Настройки", callback_data='admin_settings'),
                 InlineKeyboardButton("🔄 Обновить", callback_data='admin_refresh')
             ]
         ]
@@ -104,6 +113,12 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         
     finally:
         session.close()
+
+
+async def admin_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show admin statistics (legacy function for compatibility)"""
+    # Redirect to new detailed stats function
+    await admin_detailed_stats(update, context)
 
 
 async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -124,12 +139,24 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await admin_users_list(update, context)
     elif action == 'stats':
         await admin_detailed_stats(update, context)
+    elif action == 'keys':
+        await admin_keys_management(update, context)
     elif action == 'payments':
         await admin_payments_list(update, context)
     elif action == 'broadcast':
         await admin_broadcast_start(update, context)
+    elif action == 'logs':
+        await admin_logs_view(update, context)
+    elif action == 'settings':
+        await admin_settings(update, context)
     elif action == 'back':
         await admin_back_to_panel(update, context)
+    elif action.startswith('users_page_'):
+        page = int(action.replace('users_page_', ''))
+        context.user_data['admin_users_page'] = page
+        await admin_users_list(update, context)
+    elif action == 'broadcast_confirm':
+        await admin_broadcast_confirm(update, context)
     else:
         await query.edit_message_text(f"❌ Неизвестное действие: {action}")
 
@@ -162,6 +189,7 @@ async def admin_panel_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE
         ).scalar() or 0
         monthly_revenue = monthly_revenue / 100
         
+        available_keys = session.query(VPNKey).filter(VPNKey.is_used == False).count()
         new_users = session.query(User).filter(User.created_at >= today).count()
         
         admin_text = get_message('admin_panel',
@@ -169,6 +197,7 @@ async def admin_panel_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE
             active_subscriptions=active_subscriptions,
             daily_revenue=int(daily_revenue),
             monthly_revenue=int(monthly_revenue),
+            available_keys=available_keys,
             new_users=new_users,
             last_update=format_datetime(datetime.utcnow())
         )
@@ -179,10 +208,15 @@ async def admin_panel_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE
                 InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')
             ],
             [
-                InlineKeyboardButton("💰 Платежи", callback_data='admin_payments'),
-                InlineKeyboardButton("📢 Рассылка", callback_data='admin_broadcast')
+                InlineKeyboardButton("🔑 VPN ключи", callback_data='admin_keys'),
+                InlineKeyboardButton("💰 Платежи", callback_data='admin_payments')
             ],
             [
+                InlineKeyboardButton("📢 Рассылка", callback_data='admin_broadcast'),
+                InlineKeyboardButton("📋 Логи", callback_data='admin_logs')
+            ],
+            [
+                InlineKeyboardButton("⚙️ Настройки", callback_data='admin_settings'),
                 InlineKeyboardButton("🔄 Обновлено ✅", callback_data='admin_refresh')
             ]
         ]
@@ -246,6 +280,10 @@ async def admin_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             keyboard.append(nav_row)
         
         keyboard.extend([
+            [
+                InlineKeyboardButton("🔍 Поиск пользователя", callback_data='admin_user_search'),
+                InlineKeyboardButton("📊 Статистика", callback_data='admin_user_stats')
+            ],
             [InlineKeyboardButton("⬅️ Назад в админку", callback_data='admin_back')]
         ])
         
@@ -327,7 +365,14 @@ async def admin_detailed_stats(update: Update, context: ContextTypes.DEFAULT_TYP
         stats_text += f"🔄 <b>Обновлено:</b> {format_datetime(datetime.utcnow())}"
         
         keyboard = [
-            [InlineKeyboardButton("🔄 Обновить", callback_data='admin_stats')],
+            [
+                InlineKeyboardButton("📈 График доходов", callback_data='admin_revenue_chart'),
+                InlineKeyboardButton("👥 Активность пользователей", callback_data='admin_activity_chart')
+            ],
+            [
+                InlineKeyboardButton("📊 Экспорт данных", callback_data='admin_export_data'),
+                InlineKeyboardButton("🔄 Обновить", callback_data='admin_stats')
+            ],
             [InlineKeyboardButton("⬅️ Назад в админку", callback_data='admin_back')]
         ]
         
@@ -340,6 +385,52 @@ async def admin_detailed_stats(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         
         log_admin_action(user_id, "viewed_detailed_stats")
+        
+    finally:
+        session.close()
+
+
+async def admin_keys_management(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manage VPN keys"""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    
+    session = db_manager.get_session()
+    try:
+        total_keys = session.query(VPNKey).count()
+        available_keys = session.query(VPNKey).filter(VPNKey.is_used == False).count()
+        used_keys = total_keys - available_keys
+        
+        keys_text = f"🔑 <b>Управление VPN ключами</b>\n\n"
+        keys_text += f"📊 <b>Статистика:</b>\n"
+        keys_text += f"   • Всего ключей: {total_keys}\n"
+        keys_text += f"   • Доступных: {available_keys}\n"
+        keys_text += f"   • Использованных: {used_keys}\n\n"
+        
+        if available_keys < 10:
+            keys_text += "⚠️ <b>Внимание!</b> Мало доступных ключей!\n\n"
+        
+        keys_text += f"🔄 <b>Обновлено:</b> {format_datetime(datetime.utcnow())}"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("➕ Добавить ключи", callback_data='admin_keys_add'),
+                InlineKeyboardButton("📋 Список ключей", callback_data='admin_keys_list')
+            ],
+            [
+                InlineKeyboardButton("🗑️ Очистить использованные", callback_data='admin_keys_cleanup'),
+                InlineKeyboardButton("📊 Статистика по серверам", callback_data='admin_keys_stats')
+            ],
+            [InlineKeyboardButton("⬅️ Назад в админку", callback_data='admin_back')]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text=keys_text,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
         
     finally:
         session.close()
@@ -373,7 +464,14 @@ async def admin_payments_list(update: Update, context: ContextTypes.DEFAULT_TYPE
             payments_text += f"   📅 {format_datetime(payment.created_at)}\n\n"
         
         keyboard = [
-            [InlineKeyboardButton("🔄 Обновить", callback_data='admin_payments')],
+            [
+                InlineKeyboardButton("💰 Статистика доходов", callback_data='admin_revenue_stats'),
+                InlineKeyboardButton("🔍 Поиск платежа", callback_data='admin_payment_search')
+            ],
+            [
+                InlineKeyboardButton("📊 По методам оплаты", callback_data='admin_payment_methods'),
+                InlineKeyboardButton("🔄 Обновить", callback_data='admin_payments')
+            ],
             [InlineKeyboardButton("⬅️ Назад в админку", callback_data='admin_back')]
         ]
         
@@ -538,6 +636,89 @@ async def admin_broadcast_confirm(update: Update, context: ContextTypes.DEFAULT_
         
     finally:
         session.close()
+
+
+async def admin_logs_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """View admin logs"""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    
+    # Read recent log entries from file
+    try:
+        log_file = f"logs/vpn_bot_{datetime.now().strftime('%Y%m%d')}.log"
+        with open(log_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            recent_logs = lines[-20:]  # Last 20 lines
+        
+        logs_text = f"📋 <b>Последние логи</b>\n\n"
+        logs_text += "<pre>"
+        for line in recent_logs:
+            if len(line) > 100:
+                line = line[:97] + "..."
+            logs_text += line
+        logs_text += "</pre>"
+        
+    except FileNotFoundError:
+        logs_text = "📋 <b>Логи</b>\n\n❌ Файл логов не найден"
+    except Exception as e:
+        logs_text = f"📋 <b>Логи</b>\n\n❌ Ошибка чтения логов: {str(e)}"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("📁 Скачать полный лог", callback_data='admin_download_logs'),
+            InlineKeyboardButton("🔄 Обновить", callback_data='admin_logs')
+        ],
+        [InlineKeyboardButton("⬅️ Назад в админку", callback_data='admin_back')]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text=logs_text,
+        reply_markup=reply_markup,
+        parse_mode='HTML'
+    )
+
+
+async def admin_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show admin settings"""
+    query = update.callback_query
+    
+    settings_text = f"⚙️ <b>Настройки бота</b>\n\n"
+    settings_text += f"🤖 <b>Основные:</b>\n"
+    settings_text += f"   • Режим отладки: {'✅' if Config.DEBUG else '❌'}\n"
+    settings_text += f"   • Уровень логов: {Config.LOG_LEVEL}\n"
+    settings_text += f"   • Язык по умолчанию: {Config.DEFAULT_LANGUAGE}\n\n"
+    
+    settings_text += f"💰 <b>Тарифы:</b>\n"
+    settings_text += f"   • 1 месяц: {Config.PLAN_1_MONTH_PRICE} ₽\n"
+    settings_text += f"   • 3 месяца: {Config.PLAN_3_MONTH_PRICE} ₽\n"
+    settings_text += f"   • 6 месяцев: {Config.PLAN_6_MONTH_PRICE} ₽\n"
+    settings_text += f"   • 12 месяцев: {Config.PLAN_12_MONTH_PRICE} ₽\n\n"
+    
+    settings_text += f"🎁 <b>Реферальная программа:</b>\n"
+    settings_text += f"   • Процент бонуса: {Config.REFERRAL_BONUS_PERCENT}%\n"
+    settings_text += f"   • Минимум для вывода: {Config.REFERRAL_MIN_PAYOUT} ₽\n"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("💰 Изменить тарифы", callback_data='admin_edit_prices'),
+            InlineKeyboardButton("🎁 Настроить рефералы", callback_data='admin_edit_referrals')
+        ],
+        [
+            InlineKeyboardButton("🔧 Системные настройки", callback_data='admin_system_settings'),
+            InlineKeyboardButton("💾 Резервное копирование", callback_data='admin_backup')
+        ],
+        [InlineKeyboardButton("⬅️ Назад в админку", callback_data='admin_back')]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text=settings_text,
+        reply_markup=reply_markup,
+        parse_mode='HTML'
+    )
 
 
 async def admin_back_to_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
