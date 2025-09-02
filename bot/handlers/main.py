@@ -243,7 +243,7 @@ async def select_payment_method(update: Update, context: ContextTypes.DEFAULT_TY
 async def process_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process payment"""
     query = update.callback_query
-    await query.answer("💳 Создаем счет для оплаты...")
+    await query.answer("💳 Создаем счет для оплата...")
     
     payment_method = query.data.replace('pay_', '')
     plan_type = context.user_data.get('selected_plan')
