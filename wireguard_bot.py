@@ -12,8 +12,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Конфигурация (ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ НА СВОИ!)
-BOT_TOKEN = "YOUR_BOT_TOKEN"
-ADMIN_IDS = [123456789]  # ID администраторов
+BOT_TOKEN = "7953514140:AAGg-AgyL6Y2mvzfyKesnpouJkU6p_B8Zeo"
+ADMIN_IDS = [5631675412]  # ID администраторов
 PRICE = 100  # Цена в рублях
 SERVER_IP = "YOUR_SERVER_IP"  # IP вашего сервера
 SERVER_PUBLIC_KEY = "YOUR_SERVER_PUBLIC_KEY"  # Публичный ключ сервера
