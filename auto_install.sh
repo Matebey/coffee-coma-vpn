@@ -1,62 +1,297 @@
 #!/bin/bash
 
-# Цвета для вывода
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# Автоматическая установка VPN бота
+echo "=== Автоматическая установка VPN бота ==="
 
-echo -e "${GREEN}=== Автоматическая установка VPN бота ===${NC}"
+# Проверка на root
+if [ "$EUID" -ne 0 ]
+  then echo "Пожалуйста, запустите скрипт от имени root"
+  exit
+fi
 
-# Функция для проверки ошибок
-check_error() {
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Ошибка на шаге: $1${NC}"
-        exit 1
-    fi
-}
+# Ввод данных
+echo "Введите данные для настройки:"
+read -p "Введите токен бота от @BotFather: " BOT_TOKEN
+read -p "Введите ваш Telegram ID: " TELEGRAM_ID
+read -p "Введите токен YooMoney (или нажмите Enter чтобы пропустить): " YOOMONEY_TOKEN
+read -p "Введите токен CloudTips (или нажмите Enter чтобы пропустить): " CLOUDTIPS_TOKEN
 
-# Функция для ввода данных
-input_data() {
-    echo -e "${YELLOW}Введите данные для настройки:${NC}"
-    
-    read -p "Введите токен бота от @BotFather: " BOT_TOKEN
-    read -p "Введите ваш Telegram ID: " ADMIN_ID
-    read -p "Введите токен YooMoney (или нажмите Enter чтобы пропустить): " YOOMONEY_TOKEN
-    read -p "Введите токен CloudTips (или нажмите Enter чтобы пропустить): " CLOUDTIPSBOT_TOKEN
-    
-    # Если токены не введены, ставим заглушки
-    if [ -z "$YOOMONEY_TOKEN" ]; then
-        YOOMONEY_TOKEN="your_yoomoney_token_here"
-    fi
-    if [ -z "$CLOUDTIPSBOT_TOKEN" ]; then
-        CLOUDTIPSBOT_TOKEN="your_cloudtips_token_here"
-    fi
-}
+# Установка системных зависимостей
+echo "Установка системных зависимостей..."
+apt update
+apt upgrade -y
+apt install -y python3 python3-pip python3-venv git openvpn easy-rsa sqlite3
 
-# Функция установки зависимостей
-install_dependencies() {
-    echo -e "${YELLOW}Установка системных зависимостей...${NC}"
-    apt update && apt upgrade -y
-    apt install -y python3 python3-pip python3-venv git sqlite3 openvpn easy-rsa
-    check_error "Установка системных зависимостей"
-}
+# Установка OpenVPN через автоматический скрипт
+echo "Установка OpenVPN..."
+wget https://git.io/vpn -O openvpn-install.sh
+chmod +x openvpn-install.sh
 
-# Функция настройки OpenVPN
-setup_openvpn() {
-    echo -e "${YELLOW}Настройка OpenVPN...${NC}"
-    
-    # Копируем easy-rsa
-    cp -r /usr/share/easy-rsa/ /etc/openvpn/
-    mkdir -p /etc/openvpn/easy-rsa/keys
-    mkdir -p /etc/openvpn/client-configs
-    
-    # Создаем шаблон конфига клиента
-    cat > /etc/openvpn/client-template.ovpn << 'EOL'
-client
+# Автоматический ответ на вопросы установщика OpenVPN
+echo "Автоматическая установка OpenVPN..."
+export AUTO_INSTALL=y
+export APPROVE_INSTALL=y
+export APPROVE_IP=y
+export IPV6_SUPPORT=n
+export PORT_CHOICE=1
+export PROTOCOL_CHOICE=1
+export DNS=1
+export COMPRESSION_ENABLED=n
+export CUSTOMIZE_ENC=n
+export CLIENT=client
+export PASS=1
+
+# Запуск установщика OpenVPN
+./openvpn-install.sh << EOF
+$IPV6_SUPPORT
+$PORT_CHOICE
+$PROTOCOL_CHOICE
+$DNS
+$COMPRESSION_ENABLED
+$CUSTOMIZE_ENC
+$CLIENT
+$PASS
+EOF
+
+# Настройка OpenVPN сервера
+echo "Настройка OpenVPN сервера..."
+
+# Создание директории для конфигураций
+mkdir -p /etc/openvpn/easy-rsa/
+cd /etc/openvpn/easy-rsa/
+
+# Инициализация PKI
+echo "Инициализация PKI..."
+easyrsa init-pki
+
+# Создание CA
+echo "Создание CA..."
+easyrsa --batch build-ca nopass
+
+# Генерация серверного сертификата
+echo "Генерация серверного сертификата..."
+easyrsa build-server-full server nopass
+
+# Генерация DH параметров
+echo "Генерация DH параметров..."
+easyrsa gen-dh
+
+# Генерация TLS ключа
+echo "Генерация TLS ключа..."
+openvpn --genkey secret ta.key
+
+# Создание конфигурации сервера
+echo "Создание конфигурации сервера..."
+cat > /etc/openvpn/server.conf << EOF
+port 1194
+proto udp
+dev tun
+ca /etc/openvpn/easy-rsa/pki/ca.crt
+cert /etc/openvpn/easy-rsa/pki/issued/server.crt
+key /etc/openvpn/easy-rsa/pki/private/server.key
+dh /etc/openvpn/easy-rsa/pki/dh.pem
+server 10.8.0.0 255.255.255.0
+ifconfig-pool-persist /var/log/openvpn/ipp.txt
+push "redirect-gateway def1 bypass-dhcp"
+push "dhcp-option DNS 8.8.8.8"
+push "dhcp-option DNS 8.8.4.4"
+keepalive 10 120
+tls-auth /etc/openvpn/easy-rsa/ta.key 0
+cipher AES-256-CBC
+persist-key
+persist-tun
+status /var/log/openvpn/openvpn-status.log
+verb 3
+explicit-exit-notify 1
+EOF
+
+# Включение IP forwarding
+echo "Включение IP forwarding..."
+echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+sysctl -p
+
+# Настройка firewall
+echo "Настройка firewall..."
+iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
+iptables-save > /etc/iptables/rules.v4
+
+# Создание виртуального окружения
+echo "Создание виртуального окружения..."
+python3 -m venv /opt/vpnbot/venv
+source /opt/vpnbot/venv/bin/activate
+
+# Установка Python зависимостей с обходом проблемных версий
+echo "Установка Python зависимостей..."
+pip install --upgrade pip
+pip install python-telegram-bot==13.7 pyyaml==5.4.1
+
+# Создание директории для бота
+echo "Создание структуры бота..."
+mkdir -p /opt/vpnbot/{config,db,scripts}
+
+# Создание конфигурационного файла
+echo "Создание конфигурации бота..."
+cat > /opt/vpnbot/config/config.yaml << EOF
+bot:
+  token: "$BOT_TOKEN"
+  admin_id: $TELEGRAM_ID
+
+payments:
+  yoomoney:
+    token: "$YOOMONEY_TOKEN"
+    enabled: false
+  cloudtips:
+    token: "$CLOUDTIPS_TOKEN"
+    enabled: false
+
+vpn:
+  server_ip: $(curl -s ifconfig.me)
+  server_port: 1194
+  config_path: "/etc/openvpn/client-configs"
+  price: 100.0
+  duration_days: 30
+
+database:
+  path: "/opt/vpnbot/db/vpn_bot.db"
+EOF
+
+# Создание основного скрипта бота
+echo "Создание скрипта бота..."
+cat > /opt/vpnbot/vpn_bot.py << 'EOF'
+#!/usr/bin/env python3
+import logging
+import sqlite3
+import yaml
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Загрузка конфигурации
+with open('/opt/vpnbot/config/config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
+
+# Состояния для ConversationHandler
+SELECTING_ACTION, PROCESSING_PAYMENT = range(2)
+
+class VPNBot:
+    def __init__(self):
+        self.bot_token = config['bot']['token']
+        self.admin_id = config['bot']['admin_id']
+        self.db_path = config['database']['path']
+        self.init_db()
+
+    def init_db(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                balance REAL DEFAULT 0,
+                is_active BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS payments (
+                payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                amount REAL,
+                status TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('INSERT OR IGNORE INTO users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)',
+                      (user.id, user.username, user.first_name, user.last_name))
+        conn.commit()
+        conn.close()
+
+        welcome_text = f"""
+👋 Привет, {user.first_name}!
+
+Добро пожаловать в VPN сервис! Здесь ты можешь:
+• 🛡️ Получить безопасный доступ в интернет
+• 🌐 Обойти географические ограничения
+• 🔒 Защитить свою приватность
+
+Для начала работы используй команды:
+/buy - Купить VPN доступ
+/status - Проверить статус
+/help - Получить помощь
+
+Цена: {config['vpn']['price']} руб. за {config['vpn']['duration_days']} дней
+        """
+        
+        await update.message.reply_text(welcome_text)
+
+    async def buy_vpn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        keyboard = [['💰 Оплатить', '❌ Отмена']]
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+        
+        await update.message.reply_text(
+            f"💳 Для получения VPN доступа необходимо оплатить {config['vpn']['price']} руб.\n\n"
+            "После оплаты вы получите файл конфигурации для подключения.",
+            reply_markup=reply_markup
+        )
+        
+        return SELECTING_ACTION
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = update.message.text
+        
+        if text == '💰 Оплатить':
+            await update.message.reply_text(
+                "⚠️ Платежная система в разработке. Для тестирования используйте команду /test_payment",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        elif text == '❌ Отмена':
+            await update.message.reply_text(
+                "❌ Операция отменена.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        return SELECTING_ACTION
+
+    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text(
+            "❌ Операция отменена.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    async def test_payment(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        
+        if user.id != self.admin_id:
+            await update.message.reply_text("❌ Эта команда только для администратора")
+            return
+
+        # Генерация тестового конфига
+        client_name = f"client_{user.id}"
+        os.system(f"/etc/openvpn/easy-rsa/easyrsa build-client-full {client_name} nopass")
+        
+        # Создание клиентского конфига
+        client_config = f"""client
 dev tun
 proto udp
-remote YOUR_SERVER_IP 1194
+remote {config['vpn']['server_ip']} {config['vpn']['server_port']}
 resolv-retry infinite
 nobind
 persist-key
@@ -64,418 +299,72 @@ persist-tun
 remote-cert-tls server
 cipher AES-256-CBC
 verb 3
-key-direction 1
-
 <ca>
+{open('/etc/openvpn/easy-rsa/pki/ca.crt').read()}
 </ca>
-
 <cert>
+{open(f'/etc/openvpn/easy-rsa/pki/issued/{client_name}.crt').read()}
 </cert>
-
 <key>
+{open(f'/etc/openvpn/easy-rsa/pki/private/{client_name}.key').read()}
 </key>
-EOL
-
-    # Настраиваем сервер OpenVPN (упрощенная версия)
-    cat > /etc/openvpn/server.conf << 'EOL'
-port 1194
-proto udp
-dev tun
-ca /etc/openvpn/easy-rsa/keys/ca.crt
-cert /etc/openvpn/easy-rsa/keys/server.crt
-key /etc/openvpn/easy-rsa/keys/server.key
-dh /etc/openvpn/easy-rsa/keys/dh2048.pem
-server 10.8.0.0 255.255.255.0
-ifconfig-pool-persist ipp.txt
-push "redirect-gateway def1 bypass-dhcp"
-push "dhcp-option DNS 1.1.1.1"
-push "dhcp-option DNS 1.0.0.1"
-keepalive 10 120
-cipher AES-256-CBC
-comp-lzo
-user nobody
-group nogroup
-persist-key
-persist-tun
-status openvpn-status.log
-verb 3
-explicit-exit-notify 1
-EOL
-
-    # Генерируем CA и сертификаты
-    cd /etc/openvpn/easy-rsa/
-    ./easyrsa init-pki
-    echo -e "\n\n" | ./easyrsa build-ca nopass
-    echo -e "\n\n" | ./easyrsa gen-req server nopass
-    echo -e "yes\n\n" | ./easyrsa sign-req server server
-    ./easyrsa gen-dh
-    openvpn --genkey --secret ta.key
-    
-    # Копируем файлы в нужные директории
-    cp pki/ca.crt /etc/openvpn/
-    cp pki/issued/server.crt /etc/openvpn/
-    cp pki/private/server.key /etc/openvpn/
-    cp pki/dh.pem /etc/openvpn/
-    cp ta.key /etc/openvpn/
-    
-    check_error "Настройка OpenVPN"
-}
-
-# Функция создания виртуального окружения
-create_venv() {
-    echo -e "${YELLOW}Создание виртуального окружения...${NC}"
-    python3 -m venv venv
-    source venv/bin/activate
-    
-    # Устанавливаем Python зависимости
-    pip install python-telegram-bot==20.7 pyyaml==6.0 requests==2.31.0
-    check_error "Установка Python зависимостей"
-}
-
-# Функция создания конфигурационных файлов
-create_config_files() {
-    echo -e "${YELLOW}Создание конфигурационных файлов...${NC}"
-    
-    # Создаем config.py
-    cat > config.py << EOL
-import os
-
-# Токен бота от @BotFather
-BOT_TOKEN = "$BOT_TOKEN"
-
-# ID администратора (ваш Telegram ID)
-ADMIN_ID = $ADMIN_ID
-
-# Настройки оплаты
-YOOMONEY_TOKEN = "$YOOMONEY_TOKEN"
-CLOUDTIPSBOT_TOKEN = "$CLOUDTIPSBOT_TOKEN"
-
-# Настройки OpenVPN
-OVPN_DIR = "/etc/openvpn/"
-OVPN_KEYS_DIR = "/etc/openvpn/easy-rsa/keys/"
-OVPN_CONFIG_TEMPLATE = "/etc/openvpn/client-template.ovpn"
-
-# Настройки тарифов
-PRICE = 300
-TRIAL_PERIOD_DAYS = 7
-REFERRAL_BONUS_DAYS = 7
-
-# Настройки сервера
-SERVER_SPEED = "100"
-SERVER_DNS = "1.1.1.1"
-SERVER_PORT = "1194"
-
-# Настройки базы данных
-DB_PATH = "database.db"
-
-# Текст сообщений
-MESSAGES = {
-    "start": "Добро пожаловать в VPN сервис!",
-    "menu": "Главное меню:",
-    "buy": "Выберите тариф:",
-    "profile": "Ваш профиль:",
-    "admin": "Админ панель:"
-}
-EOL
-
-    # Создаем основной файл бота
-    cat > bot.py << 'EOL'
-import logging
-import sqlite3
-import subprocess
-import os
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-import config
-
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Инициализация базы данных
-def init_db():
-    conn = sqlite3.connect(config.DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        username TEXT,
-        full_name TEXT,
-        balance INTEGER DEFAULT 0,
-        trial_used INTEGER DEFAULT 0,
-        referral_code TEXT,
-        referred_by INTEGER,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS keys (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        key_name TEXT,
-        key_data TEXT,
-        expires_at DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        is_active INTEGER DEFAULT 1
-    )
-    ''')
-    
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS payments (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        amount INTEGER,
-        status TEXT,
-        payment_method TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    conn.commit()
-    conn.close()
-
-# Генерация конфига OpenVPN
-def generate_ovpn_config(client_name):
-    try:
-        # Генерируем ключи для клиента
-        subprocess.run([
-            'bash', '/etc/openvpn/easy-rsa/easyrsa',
-            'build-client-full', client_name, 'nopass'
-        ], check=True, cwd='/etc/openvpn/easy-rsa/')
+<tls-auth>
+{open('/etc/openvpn/easy-rsa/ta.key').read()}
+</tls-auth>
+"""
         
-        # Создаем конфиг файл
-        with open(config.OVPN_CONFIG_TEMPLATE, 'r') as template_file:
-            config_content = template_file.read()
+        with open(f'/tmp/{client_name}.ovpn', 'w') as f:
+            f.write(client_config)
         
-        # Добавляем ключи
-        with open(f"{config.OVPN_KEYS_DIR}{client_name}.crt", 'r') as cert_file:
-            cert_data = cert_file.read()
-        
-        with open(f"{config.OVPN_KEYS_DIR}{client_name}.key", 'r') as key_file:
-            key_data = key_file.read()
-        
-        with open(f"{config.OVPN_KEYS_DIR}ca.crt", 'r') as ca_file:
-            ca_data = ca_file.read()
-        
-        # Заменяем плейсхолдеры в шаблоне
-        config_content = config_content.replace('<ca>', ca_data)
-        config_content = config_content.replace('<cert>', cert_data)
-        config_content = config_content.replace('<key>', key_data)
-        
-        # Сохраняем конфиг
-        config_path = f"{config.OVPN_DIR}client-configs/{client_name}.ovpn"
-        with open(config_path, 'w') as config_file:
-            config_file.write(config_content)
-        
-        return config_path
-    except Exception as e:
-        logger.error(f"Error generating OVPN config: {e}")
-        return None
-
-# Команда /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    conn = sqlite3.connect(config.DB_PATH)
-    cursor = conn.cursor()
-    
-    # Проверяем, есть ли пользователь в базе
-    cursor.execute('SELECT * FROM users WHERE user_id = ?', (user.id,))
-    existing_user = cursor.fetchone()
-    
-    if not existing_user:
-        # Создаем нового пользователя
-        referral_code = str(user.id)[-6:]
-        cursor.execute(
-            'INSERT INTO users (user_id, username, full_name, referral_code) VALUES (?, ?, ?, ?)',
-            (user.id, user.username, user.full_name, referral_code)
-        )
-        
-        # Даем пробный период
-        trial_expires = datetime.now() + timedelta(days=config.TRIAL_PERIOD_DAYS)
-        key_name = f"trial_{user.id}"
-        
-        # Генерируем конфиг
-        config_path = generate_ovpn_config(key_name)
-        if config_path:
-            with open(config_path, 'rb') as config_file:
-                # Сохраняем ключ в базе
-                cursor.execute(
-                    'INSERT INTO keys (user_id, key_name, key_data, expires_at) VALUES (?, ?, ?, ?)',
-                    (user.id, key_name, config_path, trial_expires)
-                )
-                
-                # Отправляем конфиг пользователю
-                await context.bot.send_document(
-                    chat_id=user.id,
-                    document=config_file,
-                    caption=f"Ваш пробный ключ на {config.TRIAL_PERIOD_DAYS} дней!"
-                )
-    
-    conn.commit()
-    conn.close()
-    
-    # Показываем главное меню
-    await show_main_menu(update, context)
-
-# Главное меню
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🛒 Купить доступ", callback_data='buy')],
-        [InlineKeyboardButton("🔑 Мои ключи", callback_data='my_keys')],
-        [InlineKeyboardButton("👤 Мой профиль", callback_data='profile')],
-        [InlineKeyboardButton("🎁 Бесплатный ключ", callback_data='free_key')]
-    ]
-    
-    if update.effective_user.id == config.ADMIN_ID:
-        keyboard.append([InlineKeyboardButton("⚙️ Админ панель", callback_data='admin')])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    if hasattr(update, 'callback_query') and update.callback_query:
-        await update.callback_query.edit_message_text(
-            text=config.MESSAGES['menu'],
-            reply_markup=reply_markup
-        )
-    else:
-        await update.message.reply_text(
-            text=config.MESSAGES['menu'],
-            reply_markup=reply_markup
+        await update.message.reply_document(
+            document=open(f'/tmp/{client_name}.ovpn', 'rb'),
+            caption="✅ Ваш VPN конфиг готов! Используйте его в OpenVPN клиенте."
         )
 
-# Обработчик callback запросов
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == 'buy':
-        await show_buy_options(query)
-    elif query.data == 'profile':
-        await show_profile(query)
-    elif query.data == 'admin':
-        await show_admin_panel(query)
-    elif query.data == 'back_to_menu':
-        await show_main_menu(update, context)
-    else:
-        await query.edit_message_text("Функция в разработке")
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        help_text = """
+🤖 Доступные команды:
 
-# Показ вариантов покупки
-async def show_buy_options(query):
-    keyboard = [
-        [InlineKeyboardButton("1 месяц - 300 руб.", callback_data='buy_1')],
-        [InlineKeyboardButton("3 месяца - 800 руб.", callback_data='buy_3')],
-        [InlineKeyboardButton("6 месяцев - 1500 руб.", callback_data='buy_6')],
-        [InlineKeyboardButton("Назад", callback_data='back_to_menu')]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        text=config.MESSAGES['buy'],
-        reply_markup=reply_markup
-    )
+/start - Начать работу с ботом
+/buy - Купить VPN доступ
+/status - Проверить статус подписки
+/help - Показать эту справку
 
-# Показ профиля пользователя
-async def show_profile(query):
-    user = query.from_user
-    conn = sqlite3.connect(config.DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        'SELECT balance, referral_code FROM users WHERE user_id = ?',
-        (user.id,)
-    )
-    user_data = cursor.fetchone()
-    
-    if user_data:
-        balance, referral_code = user_data
-        referral_link = f"https://t.me/{context.bot.username}?start={user.id}"
-        
-        profile_text = f"""
-👤 Ваш профиль:
-
-💰 Баланс: {balance} руб.
-🔗 Реферальная ссылка: {referral_link}
-📊 Ваш реферальный код: {referral_code}
-
-Приглашайте друзей и получайте бонусы!
+📞 Поддержка: @your_support
         """
-        
-        keyboard = [[InlineKeyboardButton("Назад", callback_data='back_to_menu')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            text=profile_text,
-            reply_markup=reply_markup
-        )
-    
-    conn.close()
+        await update.message.reply_text(help_text)
 
-# Админ панель
-async def show_admin_panel(query):
-    if query.from_user.id != config.ADMIN_ID:
-        await query.edit_message_text("У вас нет доступа к админ панели!")
-        return
-    
-    keyboard = [
-        [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
-        [InlineKeyboardButton("🔑 Управление ключами", callback_data='admin_keys')],
-        [InlineKeyboardButton("⚙️ Настройки сервера", callback_data='admin_settings')],
-        [InlineKeyboardButton("💳 Настройки оплаты", callback_data='admin_payment')],
-        [InlineKeyboardButton("🎁 Выдать бесплатный ключ", callback_data='admin_give_key')],
-        [InlineKeyboardButton("Назад", callback_data='back_to_menu')]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        text=config.MESSAGES['admin'],
-        reply_markup=reply_markup
-    )
-
-# Главная функция
 def main():
-    # Инициализация базы данных
-    init_db()
+    bot = VPNBot()
     
-    # Создаем Application
-    application = Application.builder().token(config.BOT_TOKEN).build()
+    application = Application.builder().token(bot.bot_token).build()
+
+    # Обработчики команд
+    application.add_handler(CommandHandler("start", bot.start))
+    application.add_handler(CommandHandler("help", bot.help_command))
+    application.add_handler(CommandHandler("test_payment", bot.test_payment))
     
-    # Добавляем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
+    # Conversation handler для покупки
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('buy', bot.buy_vpn)],
+        states={
+            SELECTING_ACTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message)],
+        },
+        fallbacks=[CommandHandler('cancel', bot.cancel)],
+    )
     
-    # Запускаем бота
-    print("Бот запускается...")
+    application.add_handler(conv_handler)
+
+    # Запуск бота
     application.run_polling()
 
 if __name__ == '__main__':
     main()
-EOL
+EOF
 
-    # Создаем скрипт запуска
-    cat > start_bot.sh << 'EOL'
-#!/bin/bash
-cd /root/coffee-coma-vpn
-source venv/bin/activate
-python bot.py
-EOL
-
-    chmod +x start_bot.sh
-    check_error "Создание конфигурационных файлов"
-}
-
-# Функция настройки сервиса
-setup_service() {
-    echo -e "${YELLOW}Настройка сервиса для автозапуска...${NC}"
-    
-    cat > /etc/systemd/system/vpn-bot.service << 'EOL'
+# Создание сервисного файла
+echo "Создание сервиса systemd..."
+cat > /etc/systemd/system/vpnbot.service << EOF
 [Unit]
 Description=VPN Telegram Bot
 After=network.target
@@ -483,43 +372,63 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/coffee-coma-vpn
-ExecStart=/root/coffee-coma-vpn/start_bot.sh
+WorkingDirectory=/opt/vpnbot
+Environment=PATH=/opt/vpnbot/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/vpnbot/venv/bin/python /opt/vpnbot/vpn_bot.py
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-EOL
+EOF
 
-    systemctl daemon-reload
-    systemctl enable vpn-bot.service
-    check_error "Настройка сервиса"
-}
+# Установка прав
+chmod +x /opt/vpnbot/vpn_bot.py
+chown -R root:root /opt/vpnbot
 
-# Функция завершения установки
-finish_installation() {
-    echo -e "${GREEN}=== Установка завершена! ===${NC}"
-    echo -e "${YELLOW}Следующие шаги:${NC}"
-    echo "1. Запустите бота: systemctl start vpn-bot"
-    echo "2. Проверьте статус: systemctl status vpn-bot"
-    echo "3. Настройте файрвол для OpenVPN порта 1194:"
-    echo "   ufw allow 1194/udp"
-    echo "4. Перезагрузите OpenVPN: systemctl restart openvpn"
-    echo ""
-    echo -e "${GREEN}Бот готов к работе!${NC}"
-}
+# Запуск сервиса
+echo "Запуск VPN бота..."
+systemctl daemon-reload
+systemctl enable vpnbot.service
+systemctl start vpnbot.service
 
-# Основной процесс установки
-main() {
-    input_data
-    install_dependencies
-    setup_openvpn
-    create_venv
-    create_config_files
-    setup_service
-    finish_installation
-}
+# Создание скрипта управления клиентами
+echo "Создание скрипта управления клиентами..."
+cat > /usr/local/bin/vpn-manage << 'EOF'
+#!/bin/bash
 
-# Запуск установки
-main
+case "$1" in
+    add)
+        if [ -z "$2" ]; then
+            echo "Usage: vpn-manage add <client_name>"
+            exit 1
+        fi
+        cd /etc/openvpn/easy-rsa/
+        ./easyrsa build-client-full "$2" nopass
+        echo "Клиент $2 добавлен"
+        ;;
+    revoke)
+        if [ -z "$2" ]; then
+            echo "Usage: vpn-manage revoke <client_name>"
+            exit 1
+        fi
+        cd /etc/openvpn/easy-rsa/
+        ./easyrsa revoke "$2"
+        echo "Клиент $2 отозван"
+        ;;
+    list)
+        ls /etc/openvpn/easy-rsa/pki/issued/ | grep -v server | sed 's/\.crt//g'
+        ;;
+    *)
+        echo "Usage: vpn-manage {add|revoke|list} [client_name]"
+        exit 1
+        ;;
+esac
+EOF
+
+chmod +x /usr/local/bin/vpn-manage
+
+echo "=== Установка завершена! ==="
+echo "Бот запущен как сервис: systemctl status vpnbot"
+echo "Для управления клиентами используйте: vpn-manage {add|revoke|list}"
+echo "Для тестирования отправьте боту команду: /test_payment"
