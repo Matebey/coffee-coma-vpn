@@ -41,8 +41,7 @@ from bot.handlers.admin import (
     admin_panel,
     admin_callback_handler,
     handle_broadcast_message,
-    admin_back_to_panel,
-    admin_broadcast_confirm
+    admin_back_to_panel
 )
 from bot.utils.helpers import setup_logging
 
@@ -66,26 +65,21 @@ def create_application() -> Application:
             SELECTING_PLAN: [
                 CallbackQueryHandler(select_payment_method, pattern='^plan_'),
                 CallbackQueryHandler(main_menu, pattern='^main_menu$'),
-                CallbackQueryHandler(start_command, pattern='^start$')
             ],
             SELECTING_PAYMENT_METHOD: [
                 CallbackQueryHandler(process_payment, pattern='^pay_'),
                 CallbackQueryHandler(show_plans, pattern='^buy_vpn$'),
                 CallbackQueryHandler(main_menu, pattern='^main_menu$'),
-                CallbackQueryHandler(start_command, pattern='^start$')
             ],
             WAITING_PAYMENT: [
                 CallbackQueryHandler(verify_payment, pattern='^verify_payment_'),
                 CallbackQueryHandler(main_menu, pattern='^main_menu$'),
-                CallbackQueryHandler(start_command, pattern='^start$')
             ]
         },
         fallbacks=[
             CommandHandler('cancel', cancel_conversation),
-            CommandHandler('start', start_command),
             CommandHandler('menu', main_menu),
             CallbackQueryHandler(main_menu, pattern='^main_menu$'),
-            CallbackQueryHandler(start_command, pattern='^start$')
         ],
         allow_reentry=True
     )
@@ -106,7 +100,6 @@ def create_application() -> Application:
     
     # Main menu and navigation handlers
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
-    application.add_handler(CallbackQueryHandler(start_command, pattern='^start$'))
     
     # Profile and info handlers
     application.add_handler(CallbackQueryHandler(show_profile, pattern='^profile$'))
@@ -124,11 +117,13 @@ def create_application() -> Application:
     # Admin handlers
     application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern='^admin_'))
     application.add_handler(CallbackQueryHandler(admin_back_to_panel, pattern='^admin_back$'))
-    application.add_handler(CallbackQueryHandler(admin_broadcast_confirm, pattern='^admin_broadcast_confirm$'))
     
-    # Важно: сначала админские обработчики, потом общие
+    # Пагинация пользователей
+    application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern='^admin_users_page_'))
+    
+    # Важно: сначала админские обработчики сообщений
     application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.Chat(chat_id=Config.ADMIN_IDS),
+        filters.TEXT & ~filters.COMMAND & filters.User(user_id=Config.ADMIN_IDS),
         handle_broadcast_message
     ))
     
@@ -242,7 +237,7 @@ def main():
         # Run the bot
         logger.info("⚡ Bot is starting polling...")
         application.run_polling(
-            allowed_updates=["message", "callback_query", "my_chat_member", "chat_member"],
+            allowed_updates=["message", "callback_query"],
             drop_pending_updates=True,
             close_loop=False
         )
