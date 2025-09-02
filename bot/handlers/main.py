@@ -1,5 +1,6 @@
 """Main handlers for VPN Telegram Bot"""
-
+from telegram import Update
+from telegram.ext import ContextTypes, ConversationHandler
 import logging
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
