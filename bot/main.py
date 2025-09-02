@@ -126,16 +126,16 @@ def create_application() -> Application:
     application.add_handler(CallbackQueryHandler(admin_back_to_panel, pattern='^admin_back$'))
     application.add_handler(CallbackQueryHandler(admin_broadcast_confirm, pattern='^admin_broadcast_confirm$'))
     
+    # Важно: сначала админские обработчики, потом общие
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.Chat(chat_id=Config.ADMIN_IDS),
+        handle_broadcast_message
+    ))
+    
     # Regular message handler (for non-command messages)
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_message
-    ))
-    
-    # Broadcast message handler (for admins) - должен быть после общего handler
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.Chat(chat_id=Config.ADMIN_IDS),
-        handle_broadcast_message
     ))
     
     # Error handler
@@ -154,7 +154,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text="❌ Произошла техническая ошибка. Мы уже работаем над её устранением.\n\n"
-                     "Попробуйте позже или обратитесь в поддержку: @vpn_support_bot"
+                     "Попробуйте позже или обратитесь в поддержку."
             )
     except Exception as e:
         logger.error(f"Failed to send error message to user: {e}")
@@ -178,7 +178,6 @@ async def post_init(application: Application) -> None:
     startup_message = (
         "🤖 <b>VPN Bot запущен успешно!</b>\n\n"
         f"🆔 Бот: @{bot_info.username}\n"
-        f"📅 Время запуска: {logging.Formatter().formatTime(logging.LogRecord('', 0, '', 0, '', (), None))}\n"
         f"⚙️ Режим отладки: {'✅' if Config.DEBUG else '❌'}\n"
         f"🗄️ База данных: {'✅ Подключена' if db_manager else '❌ Ошибка'}\n\n"
         "🎯 Бот готов к работе с пользователями!"
@@ -208,8 +207,7 @@ async def post_shutdown(application: Application) -> None:
         # Send shutdown message to admins
         shutdown_message = (
             "🛑 <b>VPN Bot остановлен</b>\n\n"
-            f"🆔 Бот: @{bot_info.username}\n"
-            f"📅 Время остановки: {logging.Formatter().formatTime(logging.LogRecord('', 0, '', 0, '', (), None))}\n\n"
+            f"🆔 Бот: @{bot_info.username}\n\n"
             "ℹ️ Бот временно недоступен для пользователей."
         )
         
