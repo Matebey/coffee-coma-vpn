@@ -41,7 +41,8 @@ from bot.handlers.admin import (
     admin_panel,
     admin_callback_handler,
     handle_broadcast_message,
-    admin_back_to_panel
+    admin_back_to_panel,
+    admin_broadcast_confirm
 )
 from bot.utils.helpers import setup_logging
 
@@ -117,6 +118,7 @@ def create_application() -> Application:
     # Admin handlers
     application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern='^admin_'))
     application.add_handler(CallbackQueryHandler(admin_back_to_panel, pattern='^admin_back$'))
+    application.add_handler(CallbackQueryHandler(admin_broadcast_confirm, pattern='^admin_broadcast_confirm$'))
     
     # Пагинация пользователей
     application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern='^admin_users_page_'))
