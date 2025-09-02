@@ -79,6 +79,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 referrer.total_referrals += 1
                 session.commit()
                 logger.info(f"User {user.telegram_id} referred by {referrer.telegram_id}")
+                
+                # Send notification to referrer
+                try:
+                    await context.bot.send_message(
+                        chat_id=referrer.telegram_id,
+                        text=get_message('success_referral_registered')
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to notify referrer: {e}")
         finally:
             session.close()
     
@@ -369,6 +378,18 @@ async def verify_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     bonus = calculate_referral_bonus(payment.amount)
                     referrer.referral_balance += bonus / 100  # Convert to rubles
                     session.commit()
+                    
+                    # Notify referrer about bonus
+                    try:
+                        await context.bot.send_message(
+                            chat_id=referrer.telegram_id,
+                            text=get_message('referral_bonus',
+                                amount=bonus / 100,
+                                friend_name=user.full_name
+                            )
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to notify referrer about bonus: {e}")
             
             session.commit()
             
