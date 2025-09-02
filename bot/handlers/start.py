@@ -1,8 +1,9 @@
-from aiogram import Router, types
+from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from bot.database.models import User, Referral
+from bot.database.db import get_user, create_user, async_session
+from bot.database.models import Referral, User
 from bot.keyboards.main import get_main_keyboard
 
 router = Router()
@@ -11,25 +12,30 @@ router = Router()
 async def start_command(message: Message):
     """Обработка команды /start"""
     user_id = message.from_user.id
-    user = await User.get(user_id)
+    user = await get_user(user_id)
     
     if not user:
-        user = await User.create(
-            id=user_id,
-            username=message.from_user.username,
-            first_name=message.from_user.first_name,
-            last_name=message.from_user.last_name
-        )
+        user_data = {
+            'id': user_id,
+            'username': message.from_user.username,
+            'first_name': message.from_user.first_name,
+            'last_name': message.from_user.last_name
+        }
+        user = await create_user(user_data)
         
+        # Обработка реферальной ссылки
         if len(message.text.split()) > 1:
             ref_code = message.text.split()[1]
             if ref_code.startswith('ref'):
                 try:
                     referrer_id = int(ref_code[3:])
-                    await Referral.create(
-                        referrer_id=referrer_id,
-                        referred_id=user_id
-                    )
+                    async with async_session() as session:
+                        referral = Referral(
+                            referrer_id=referrer_id,
+                            referred_id=user_id
+                        )
+                        session.add(referral)
+                        await session.commit()
                 except ValueError:
                     pass
     
