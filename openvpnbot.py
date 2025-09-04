@@ -35,17 +35,17 @@ PAYMENT_VERIFICATION = {}
 def init_config():
     if not os.path.exists(CONFIG_FILE):
         config = {
-            "server_ip": "YOUR_SERVER_IP",  # ЗАМЕНИТЕ НА РЕАЛЬНЫЙ IP
+            "server_ip": "77.239.105.14",  # ЗАМЕНИТЕ НА РЕАЛЬНЫЙ IP
             "server_port": "8443",
             "protocol": "udp",
             "admin_ids": 5631675412],  # ЗАМЕНИТЕ НА РЕАЛЬНЫЕ ID АДМИНОВ
-            "price": 100,
+            "price": 50,
             "trial_days": 7,
-            "sbp_link": "https://t.me/c/1234567890/1",
-            "wallet_number": "1234567890",
-            "dns_servers": "8.8.8.8, 8.8.4.4",
-            "ca_cert_path": f"{EASY_RSA_DIR}pki/ca.crt",
-            "ta_key_path": f"{OVPN_DIR}ta.key"
+            "sbp_link": "https://yoomoney.ru/to/4100119260614239/0",
+            "wallet_number": "https://yoomoney.ru/to/4100119260614239/0",
+            "dns_servers": "1.1.1.1, 8.8.8.8",
+            "ca_cert_path": "/etc/openvpn/ca.crt",
+            "ta_key_path": "/etc/openvpn/ta.key"
         }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(config, f, indent=4)
