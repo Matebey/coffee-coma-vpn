@@ -276,7 +276,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         keyboard = [
-            [InlineKeyboardButton("💰 Купить доступ (100 руб.)", callback_data='buy')],
+            [InlineKeyboardButton("💰 Купить доступ (50 руб.)", callback_data='buy')],
             [InlineKeyboardButton("🎁 Бесплатный пробный период (7 дней)", callback_data='trial')],
             [InlineKeyboardButton("📱 Мои конфиги", callback_data='my_configs')],
             [InlineKeyboardButton("❓ Помощь", callback_data='help')]
