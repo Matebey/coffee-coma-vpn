@@ -1,4 +1,3 @@
-json
 {
     "bot_token": "YOUR_BOT_TOKEN_HERE",
     "admin_id": 5631675412,
@@ -17,3 +16,4 @@ json
     "ca_cert_path": "/etc/openvpn/ca.crt",
     "ta_key_path": "/etc/openvpn/ta.key"
 }
+
