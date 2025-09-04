@@ -1,13 +1,19 @@
+json
 {
-            "server_ip": "77.239.105.14",  # ЗАМЕНИТЕ НА РЕАЛЬНЫЙ IP
-            "server_port": "8443",
-            "protocol": "udp",
-            "admin_ids": [5631675412],  # ЗАМЕНИТЕ НА РЕАЛЬНЫЕ ID АДМИНОВ
-            "price": 50,
-            "trial_days": 7,
-            "sbp_link": "https://yoomoney.ru/to/4100119260614239/0",
-            "wallet_number": "https://yoomoney.ru/to/4100119260614239/0",
-            "dns_servers": "1.1.1.1, 8.8.8.8",
-            "ca_cert_path": f"/etc/openvpn/ca.crt",
-            "ta_key_path": f"/etc/openvpn/ta.key"
-        }
+    "bot_token": "YOUR_BOT_TOKEN_HERE",
+    "admin_id": 5631675412,
+    "openvpn_config_path": "/etc/openvpn/client/config.ovpn",
+    "openvpn_management_ip": "127.0.0.1",
+    "openvpn_management_port": 7505,
+    "server_ip": "77.239.105.14",
+    "server_port": "8443",
+    "protocol": "udp",
+    "admin_ids": [5631675412],
+    "price": 50,
+    "trial_days": 7,
+    "sbp_link": "https://yoomoney.ru/to/4100119260614239/0",
+    "wallet_number": "https://yoomoney.ru/to/4100119260614239/0",
+    "dns_servers": "1.1.1.1, 8.8.8.8",
+    "ca_cert_path": "/etc/openvpn/ca.crt",
+    "ta_key_path": "/etc/openvpn/ta.key"
+}
