@@ -22,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = "7953514140:AAGg-AgyL6Y2mvzfyKesnpouJkU6p_B8Zeo"  # ЗАМЕНИТЕ НА РЕАЛЬНЫЙ ТОКЕН
+BOT_TOKEN = "8439963327:AAHDIJQuP611mfBtcFSZyDwO4-mBANPArAk"  # ЗАМЕНИТЕ НА РЕАЛЬНЫЙ ТОКЕН
 CONFIG_FILE = "config.json"
 DB_FILE = "openvpn.db"
 OVPN_DIR = "/etc/openvpn/"  # Директория OpenVPN
@@ -36,9 +36,9 @@ def init_config():
     if not os.path.exists(CONFIG_FILE):
         config = {
             "server_ip": "YOUR_SERVER_IP",  # ЗАМЕНИТЕ НА РЕАЛЬНЫЙ IP
-            "server_port": "1194",
+            "server_port": "8443",
             "protocol": "udp",
-            "admin_ids": [123456789],  # ЗАМЕНИТЕ НА РЕАЛЬНЫЕ ID АДМИНОВ
+            "admin_ids": 5631675412],  # ЗАМЕНИТЕ НА РЕАЛЬНЫЕ ID АДМИНОВ
             "price": 100,
             "trial_days": 7,
             "sbp_link": "https://t.me/c/1234567890/1",
