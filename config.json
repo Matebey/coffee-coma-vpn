@@ -22,3 +22,4 @@
     "openvpn_management_ip": "127.0.0.1",
     "openvpn_management_port": 7505,
     "client_config_template": "/etc/openvpn/client-template.ovpn"
+}
