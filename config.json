@@ -1,7 +1,7 @@
 {
-    "server_ip": "ваш_реальный_ip",
-    "server_public_key": "ваш_публичный_ключ",
-    "admin_ids": [ваш_telegram_id],
+    "server_ip": "77.239.105.17",
+    "server_public_key": "AAAAC3NzaC1lZDI1NTE5AAAAIL6JznsxyInWPJLNcrClRTGzU6WwPeadiQS4uM1745UZ root@vm315155.hosted-by.u1host.com",
+    "admin_ids": [5631675412],
     "price": 100,
     "trial_days": 7
 }
