@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 # Константы
 CONFIG_FILE = "config.json"
-DB_FILE = "openvpn.db"
 
 # Шифрование ключей
 KEY = Fernet.generate_key()
@@ -40,6 +39,9 @@ def init_config():
             "admin_ids": [5631675412],
             "openvpn_dir": "/etc/openvpn",
             "easy_rsa_dir": "/etc/openvpn/easy-rsa",
+            "pki_dir": "/etc/openvpn/easy-rsa/pki",
+            "keys_dir": "/etc/openvpn/easy-rsa/pki/private",
+            "issued_dir": "/etc/openvpn/easy-rsa/pki/issued",
             "server_config": "/etc/openvpn/server.conf",
             "db_path": "vpn_bot.db",
             "trial_days": 7,
@@ -51,10 +53,11 @@ def init_config():
             "sbp_link": "https://yoomoney.ru/to/4100119260614239/0",
             "wallet_number": "https://yoomoney.ru/to/4100119260614239/0",
             "dns_servers": "1.1.1.1,8.8.8.8",
-            "ca_cert_path": "/etc/openvpn/ca.crt",
-            "ta_key_path": "/etc/openvpn/ta.key",
+            "ca_cert_path": "/etc/openvpn/easy-rsa/pki/ca.crt",
+            "ta_key_path": "/etc/openvpn/easy-rsa/ta.key",
             "openvpn_management_ip": "127.0.0.1",
-            "openvpn_management_port": 7505
+            "openvpn_management_port": 7505,
+            "client_config_template": "/etc/openvpn/client-template.ovpn"
         }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(default_config, f, indent=4)
@@ -70,38 +73,17 @@ def load_config():
             # Добавляем недостающие параметры или преобразуем названия
             config.setdefault('openvpn_dir', '/etc/openvpn')
             config.setdefault('easy_rsa_dir', '/etc/openvpn/easy-rsa')
+            config.setdefault('pki_dir', '/etc/openvpn/easy-rsa/pki')
+            config.setdefault('keys_dir', '/etc/openvpn/easy-rsa/pki/private')
+            config.setdefault('issued_dir', '/etc/openvpn/easy-rsa/pki/issued')
             config.setdefault('server_config', '/etc/openvpn/server.conf')
             config.setdefault('db_path', 'vpn_bot.db')
             config.setdefault('max_configs_per_user', 3)
+            config.setdefault('client_config_template', '/etc/openvpn/client-template.ovpn')
             
             return config
     except FileNotFoundError:
-        # Создаем конфиг по умолчанию
-        default_config = {
-            "bot_token": "8439963327:AAHDIJQuP611mfBtcFSZyDwO4-mBANPArAk",
-            "admin_ids": [5631675412],
-            "openvpn_dir": "/etc/openvpn",
-            "easy_rsa_dir": "/etc/openvpn/easy-rsa",
-            "server_config": "/etc/openvpn/server.conf",
-            "db_path": "vpn_bot.db",
-            "trial_days": 7,
-            "max_configs_per_user": 3,
-            "server_ip": "77.239.105.14",
-            "server_port": 8443,
-            "protocol": "udp",
-            "price": 50,
-            "sbp_link": "https://yoomoney.ru/to/4100119260614239/0",
-            "wallet_number": "https://yoomoney.ru/to/4100119260614239/0",
-            "dns_servers": "1.1.1.1,8.8.8.8",
-            "ca_cert_path": "/etc/openvpn/ca.crt",
-            "ta_key_path": "/etc/openvpn/ta.key",
-            "openvpn_management_ip": "127.0.0.1",
-            "openvpn_management_port": 7505
-        }
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(default_config, f, indent=4)
-        print(f"Создан файл конфигурации по умолчанию: {CONFIG_FILE}")
-        return default_config
+        return init_config()
 
 def save_config(config):
     with open(CONFIG_FILE, 'w') as f:
@@ -165,6 +147,8 @@ def create_ovpn_client_certificate(username):
     try:
         config = load_config()
         easy_rsa_dir = config.get('easy_rsa_dir', '/etc/openvpn/easy-rsa/')
+        keys_dir = config.get('keys_dir', '/etc/openvpn/easy-rsa/pki/private')
+        issued_dir = config.get('issued_dir', '/etc/openvpn/easy-rsa/pki/issued')
         
         # Генерируем уникальное имя для клиента
         client_name = f"client_{username}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -189,7 +173,7 @@ def create_ovpn_client_certificate(username):
             return None, None, None
         
         # Читаем приватный ключ
-        private_key_path = f"{easy_rsa_dir}pki/private/{client_name}.key"
+        private_key_path = os.path.join(keys_dir, f"{client_name}.key")
         if os.path.exists(private_key_path):
             with open(private_key_path, 'r') as f:
                 private_key = f.read()
@@ -199,7 +183,7 @@ def create_ovpn_client_certificate(username):
             return None, None, None
         
         # Читаем сертификат
-        cert_path = f"{easy_rsa_dir}pki/issued/{client_name}.crt"
+        cert_path = os.path.join(issued_dir, f"{client_name}.crt")
         if os.path.exists(cert_path):
             with open(cert_path, 'r') as f:
                 certificate = f.read()
@@ -220,16 +204,32 @@ def generate_ovpn_client_config(client_name, private_key, certificate):
     config = load_config()
     
     # Читаем CA сертификат
-    with open(config['ca_cert_path'], 'r') as f:
+    ca_cert_path = config.get('ca_cert_path', '/etc/openvpn/easy-rsa/pki/ca.crt')
+    with open(ca_cert_path, 'r') as f:
         ca_cert = f.read()
     
     # Читаем TLS ключ (если используется)
+    ta_key_path = config.get('ta_key_path', '/etc/openvpn/easy-rsa/ta.key')
     ta_key = ""
-    if os.path.exists(config['ta_key_path']):
-        with open(config['ta_key_path'], 'r') as f:
+    if os.path.exists(ta_key_path):
+        with open(ta_key_path, 'r') as f:
             ta_key = f.read()
     
-    client_config = f"""client
+    # Используем шаблон конфига если он указан
+    client_config_template = config.get('client_config_template')
+    if client_config_template and os.path.exists(client_config_template):
+        with open(client_config_template, 'r') as f:
+            client_config = f.read()
+        
+        # Заменяем плейсхолдеры
+        client_config = client_config.replace('<ca>', ca_cert)
+        client_config = client_config.replace('<cert>', certificate)
+        client_config = client_config.replace('<key>', private_key)
+        if ta_key:
+            client_config = client_config.replace('<tls-auth>', ta_key)
+    else:
+        # Генерируем конфиг вручную
+        client_config = f"""client
 dev tun
 proto {config['protocol']}
 remote {config['server_ip']} {config['server_port']}
@@ -256,9 +256,9 @@ key-direction 1
 </key>
 """
     
-    # Добавляем TLS auth если используется
-    if ta_key:
-        client_config += f"""
+        # Добавляем TLS auth если используется
+        if ta_key:
+            client_config += f"""
 <tls-auth>
 {ta_key}
 </tls-auth>
@@ -302,7 +302,7 @@ async def create_user_config(user_id, username, is_trial=False):
         
         # Проверяем максимальное количество конфигов на пользователя
         max_configs = config.get('max_configs_per_user', 3)
-        conn = sqlite3.connect(config.get('db_path', DB_FILE))
+        conn = sqlite3.connect(config.get('db_path', 'vpn_bot.db'))
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM users WHERE user_id = ?", (user_id,))
         user_config_count = cursor.fetchone()[0]
@@ -333,7 +333,7 @@ async def create_user_config(user_id, username, is_trial=False):
         encrypted_certificate = cipher_suite.encrypt(certificate.encode())
         
         # Сохранение в базу
-        conn = sqlite3.connect(config.get('db_path', DB_FILE))
+        conn = sqlite3.connect(config.get('db_path', 'vpn_bot.db'))
         cursor = conn.cursor()
         cursor.execute(
             """INSERT INTO users (user_id, username, config_name, private_key, certificate, 
@@ -402,10 +402,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
         conn.close()
         
-        # ... остальной код
-        
         keyboard = [
-            [InlineKeyboardButton("💰 Купить доступ (100 руб.)", callback_data='buy')],
+            [InlineKeyboardButton("💰 Купить доступ (50 руб.)", callback_data='buy')],
             [InlineKeyboardButton("🎁 Бесплатный пробный период (7 дней)", callback_data='trial')],
             [InlineKeyboardButton("📱 Мои конфиги", callback_data='my_configs')],
             [InlineKeyboardButton("❓ Помощь", callback_data='help')]
@@ -432,7 +430,7 @@ async def show_my_configs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         config = load_config()
-        conn = sqlite3.connect(config.get('db_path', DB_FILE))
+        conn = sqlite3.connect(config.get('db_path', 'vpn_bot.db'))
         cursor = conn.cursor()
         cursor.execute("""
             SELECT config_name, status, expires_at, is_trial, is_paid 
@@ -588,7 +586,7 @@ async def create_trial_config(query, context):
         
         # Проверяем не использовал ли уже пробный период
         config = load_config()
-        conn = sqlite3.connect(config.get('db_path', DB_FILE))
+        conn = sqlite3.connect(config.get('db_path', 'vpn_bot.db'))
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM users WHERE user_id = ? AND is_trial = 1", (user_id,))
         if cursor.fetchone():
@@ -607,7 +605,7 @@ async def create_trial_config(query, context):
             # Отправляем конфиг пользователю
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"🎁 Пробный период активирован на 7 дней!\n\n"
+                text=f"🎁 Пробный период активирован на {config['trial_days']} дней!\n\n"
                      f"🔧 Имя конфига: {result['config_name']}\n"
                      f"⏰ Действует до: {result['expires_at']}"
             )
@@ -724,7 +722,7 @@ async def show_my_configs_callback(query, context):
     try:
         user_id = query.from_user.id
         config = load_config()
-        conn = sqlite3.connect(config.get('db_path', DB_FILE))
+        conn = sqlite3.connect(config.get('db_path', 'vpn_bot.db'))
         cursor = conn.cursor()
         cursor.execute("""
             SELECT config_name, status, expires_at, is_trial, is_paid 
@@ -775,7 +773,7 @@ async def admin_stats(query, context):
     
     try:
         config = load_config()
-        conn = sqlite3.connect(config.get('db_path', DB_FILE))
+        conn = sqlite3.connect(config.get('db_path', 'vpn_bot.db'))
         cursor = conn.cursor()
         
         cursor.execute("SELECT COUNT(*) FROM users")
