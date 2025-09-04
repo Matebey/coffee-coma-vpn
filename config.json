@@ -1,5 +1,5 @@
 {
-    "bot_token": "YOUR_BOT_TOKEN_HERE",
+    "bot_token": "8439963327:AAHDIJQuP611mfBtcFSZyDwO4-mBANPArAk",
     "admin_id": 5631675412,
     "openvpn_config_path": "/etc/openvpn/client/config.ovpn",
     "openvpn_management_ip": "127.0.0.1",
