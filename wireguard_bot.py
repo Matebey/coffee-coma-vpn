@@ -4,19 +4,23 @@ import subprocess
 import qrcode
 import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from cryptography.fernet import Fernet
 import logging
 import json
+import re
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = "7953514140:AAGg-AgyL6Y2mvzfyKesnpouJkU6p_B8Zeo"
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 CONFIG_FILE = "config.json"
 DB_FILE = "wireguard.db"
+
+# Состояния для обработки скриншотов оплаты
+PAYMENT_VERIFICATION = {}
 
 # Инициализация конфига
 def init_config():
@@ -24,9 +28,11 @@ def init_config():
         config = {
             "server_ip": "YOUR_SERVER_IP",
             "server_public_key": "YOUR_SERVER_PUBLIC_KEY",
-            "admin_ids": [123456789],  # Ваш Telegram ID
+            "admin_ids": [123456789],
             "price": 100,
-            "trial_days": 7
+            "trial_days": 7,
+            "sbp_link": "https://t.me/c/1234567890/1",  # Ссылка для оплаты по СБП
+            "wallet_number": "1234567890"  # Номер кошелька/счета
         }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(config, f, indent=4)
@@ -60,8 +66,21 @@ def init_db():
             address TEXT,
             status TEXT DEFAULT 'active',
             is_trial INTEGER DEFAULT 0,
+            is_paid INTEGER DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             expires_at DATETIME
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            amount INTEGER,
+            payment_method TEXT,
+            status TEXT DEFAULT 'pending',
+            screenshot_path TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
@@ -97,6 +116,8 @@ def add_client_to_wg(public_key, address):
             logger.error(f"WG error: {result.stderr}")
             return False
             
+        # Сохраняем конфигурацию
+        subprocess.run(['wg', 'quicksave', 'wg0'], check=True)
         return True
         
     except subprocess.CalledProcessError as e:
@@ -131,6 +152,73 @@ def is_admin(user_id):
     config = load_config()
     return user_id in config['admin_ids']
 
+# Создание конфига для пользователя
+async def create_user_config(user_id, is_trial=False):
+    try:
+        config = load_config()
+        
+        # Генерация ключей
+        private_key = subprocess.run(['wg', 'genkey'], capture_output=True, text=True).stdout.strip()
+        public_key = subprocess.run(['wg', 'pubkey'], input=private_key, capture_output=True, text=True).stdout.strip()
+        
+        # Генерация адреса
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users")
+        user_count = cursor.fetchone()[0]
+        address = f"10.0.0.{user_count + 2}/32"
+        
+        # Расчет даты окончания
+        if is_trial:
+            expires_at = (datetime.datetime.now() + datetime.timedelta(days=config['trial_days'])).strftime('%Y-%m-%d %H:%M:%S')
+            config_name = f"trial_{user_id}"
+            is_trial_val = 1
+            is_paid_val = 0
+        else:
+            expires_at = (datetime.datetime.now() + datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+            config_name = f"paid_{user_id}"
+            is_trial_val = 0
+            is_paid_val = 1
+        
+        # Сохранение в базу
+        cursor.execute(
+            """INSERT INTO users (user_id, config_name, private_key, public_key, address, 
+               is_trial, is_paid, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
+            (user_id, config_name, private_key, public_key, address, is_trial_val, is_paid_val, expires_at)
+        )
+        
+        # Добавляем запись о платеже если это оплата
+        if not is_trial:
+            cursor.execute(
+                """INSERT INTO payments (user_id, amount, payment_method, status) 
+                   VALUES (?, ?, 'sbp', 'completed')""",
+                (user_id, config['price'])
+            )
+        
+        conn.commit()
+        conn.close()
+        
+        # Добавление в WG
+        if add_client_to_wg(public_key, address):
+            # Генерация конфига
+            client_config = generate_client_config(private_key, address)
+            qr_path = generate_qr_code(client_config, config_name)
+            
+            return {
+                'success': True,
+                'config': client_config,
+                'qr_path': qr_path,
+                'config_name': config_name,
+                'address': address,
+                'expires_at': expires_at
+            }
+        else:
+            return {'success': False, 'error': 'WireGuard error'}
+            
+    except Exception as e:
+        logger.error(f"Create config error: {e}")
+        return {'success': False, 'error': str(e)}
+
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -150,8 +238,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         keyboard = [
-            [InlineKeyboardButton("💰 Купить доступ", callback_data='buy')],
-            [InlineKeyboardButton("🎁 Бесплатный пробный период", callback_data='trial')],
+            [InlineKeyboardButton("💰 Купить доступ (100 руб.)", callback_data='buy')],
+            [InlineKeyboardButton("🎁 Бесплатный пробный период (7 дней)", callback_data='trial')],
             [InlineKeyboardButton("📱 Мои конфиги", callback_data='my_configs')],
             [InlineKeyboardButton("❓ Помощь", callback_data='help')]
         ]
@@ -162,7 +250,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "🔒 Добро пожаловать в VPN сервис!\n\nВыберите действие:",
+            "🔒 Добро пожаловать в VPN сервис!\n\n"
+            "✅ Защита вашего соединения\n"
+            "🌍 Доступ к любым ресурсам\n"
+            "⚡ Высокая скорость\n\n"
+            "Выберите действие:",
             reply_markup=reply_markup
         )
     except Exception as e:
@@ -174,7 +266,10 @@ async def show_my_configs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute("SELECT config_name, address, status, expires_at FROM users WHERE user_id = ?", (user_id,))
+        cursor.execute("""
+            SELECT config_name, address, status, expires_at, is_trial, is_paid 
+            FROM users WHERE user_id = ? ORDER BY created_at DESC
+        """, (user_id,))
         configs = cursor.fetchall()
         conn.close()
         
@@ -182,21 +277,141 @@ async def show_my_configs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "📱 Ваши конфигурации:\n\n"
             for config in configs:
                 status_emoji = "✅" if config[2] == 'active' else "❌"
-                text += f"{status_emoji} {config[0]} - {config[1]}\n"
+                config_type = "🎁 Пробный" if config[4] == 1 else "💳 Платный"
+                text += f"{status_emoji} {config_type} - {config[0]}\n"
+                text += f"📍 Адрес: {config[1]}\n"
                 if config[3]:
-                    text += f"   ⏰ До: {config[3]}\n"
+                    text += f"⏰ До: {config[3]}\n"
+                text += "\n"
         else:
-            text = "У вас пока нет конфигураций."
+            text = "У вас пока нет конфигураций.\n\nИспользуйте пробный период или купите доступ!"
         
         await update.message.reply_text(text)
     except Exception as e:
         logger.error(f"My configs error: {e}")
+        await update.message.reply_text("❌ Ошибка при загрузке конфигураций")
+
+# Показать методы оплаты
+async def show_payment_methods(query, context):
+    try:
+        config = load_config()
+        user_id = query.from_user.id
+        
+        # Сохраняем что пользователь начал процесс оплаты
+        PAYMENT_VERIFICATION[user_id] = {'status': 'waiting_screenshot'}
+        
+        payment_text = f"""
+💳 Оплата доступа
+
+Стоимость: {config['price']} руб.
+Срок действия: 30 дней
+
+📲 Оплата по СБП:
+1. Переведите {config['price']} руб. на наш счет
+2. Сделайте скриншот перевода
+3. Отправьте скриншот в этот чат
+
+💳 Реквизиты для перевода:
+{config['sbp_link']}
+
+После проверки оплаты вы получите конфиг файл.
+        """
+        
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=payment_text
+        )
+        
+    except Exception as e:
+        logger.error(f"Payment methods error: {e}")
+
+# Обработка скриншотов оплаты
+async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = update.effective_user.id
+        
+        # Проверяем ожидает ли пользователь проверки скриншота
+        if user_id not in PAYMENT_VERIFICATION or PAYMENT_VERIFICATION[user_id]['status'] != 'waiting_screenshot':
+            return
+        
+        if update.message.photo:
+            # Сохраняем информацию о скриншоте
+            photo = update.message.photo[-1]
+            file_id = photo.file_id
+            
+            # Скачиваем файл
+            file = await context.bot.get_file(file_id)
+            screenshot_path = f"payment_{user_id}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+            await file.download_to_drive(screenshot_path)
+            
+            # Обновляем статус
+            PAYMENT_VERIFICATION[user_id] = {
+                'status': 'verifying',
+                'screenshot_path': screenshot_path,
+                'timestamp': datetime.datetime.now()
+            }
+            
+            # Создаем конфиг для пользователя
+            result = await create_user_config(user_id, is_trial=False)
+            
+            if result['success']:
+                # Отправляем конфиг пользователю
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"✅ Оплата подтверждена! Доступ активирован на 30 дней.\n\n"
+                         f"🔧 Имя конфига: {result['config_name']}\n"
+                         f"📍 Адрес: {result['address']}\n"
+                         f"⏰ Действует до: {result['expires_at']}"
+                )
+                
+                await context.bot.send_photo(
+                    chat_id=user_id,
+                    photo=open(result['qr_path'], 'rb'),
+                    caption="QR код для импорта"
+                )
+                
+                await context.bot.send_document(
+                    chat_id=user_id,
+                    document=result['config'].encode('utf-8'),
+                    filename=f"{result['config_name']}.conf",
+                    caption="Конфигурационный файл WireGuard"
+                )
+                
+                # Очищаем временные файлы
+                if os.path.exists(result['qr_path']):
+                    os.remove(result['qr_path'])
+                
+                # Уведомляем админов
+                config = load_config()
+                for admin_id in config['admin_ids']:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=f"💰 Новый платеж!\n\n"
+                                 f"👤 User: {user_id}\n"
+                                 f"💳 Сумма: {config['price']} руб.\n"
+                                 f"📅 Время: {datetime.datetime.now()}"
+                        )
+                    except:
+                        pass
+                
+            else:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="❌ Ошибка при создании конфига. Свяжитесь с администратором."
+                )
+            
+            # Удаляем из ожидания проверки
+            if user_id in PAYMENT_VERIFICATION:
+                del PAYMENT_VERIFICATION[user_id]
+                
+    except Exception as e:
+        logger.error(f"Screenshot handler error: {e}")
 
 # Создание пробного конфига
 async def create_trial_config(query, context):
     try:
         user_id = query.from_user.id
-        config = load_config()
         
         # Проверяем не использовал ли уже пробный период
         conn = sqlite3.connect(DB_FILE)
@@ -209,68 +424,42 @@ async def create_trial_config(query, context):
             )
             conn.close()
             return
-        
-        # Генерация ключей
-        private_key = subprocess.run(['wg', 'genkey'], capture_output=True, text=True).stdout.strip()
-        public_key = subprocess.run(['wg', 'pubkey'], input=private_key, capture_output=True, text=True).stdout.strip()
-        
-        # Генерация адреса
-        cursor.execute("SELECT COUNT(*) FROM users")
-        user_count = cursor.fetchone()[0]
-        address = f"10.0.0.{user_count + 2}/32"
-        
-        # Расчет даты окончания
-        expires_at = (datetime.datetime.now() + datetime.timedelta(days=config['trial_days'])).strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Сохранение в базу
-        config_name = f"trial_{user_id}"
-        cursor.execute(
-            """INSERT INTO users (user_id, config_name, private_key, public_key, address, 
-               is_trial, expires_at, status) VALUES (?, ?, ?, ?, ?, 1, ?, 'active')""",
-            (user_id, config_name, private_key, public_key, address, expires_at)
-        )
-        conn.commit()
         conn.close()
         
-        # Добавление в WG
-        if add_client_to_wg(public_key, address):
-            # Генерация конфига
-            client_config = generate_client_config(private_key, address)
-            qr_path = generate_qr_code(client_config, config_name)
+        # Создаем конфиг
+        result = await create_user_config(user_id, is_trial=True)
+        
+        if result['success']:
+            # Отправляем конфиг пользователю
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"🎁 Пробный период активирован на 7 дней!\n\n"
+                     f"🔧 Имя конфига: {result['config_name']}\n"
+                     f"📍 Адрес: {result['address']}\n"
+                     f"⏰ Действует до: {result['expires_at']}"
+            )
             
-            if qr_path:
-                # Отправка пользователю
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"🎁 Пробный период активирован!\n\n"
-                         f"⏰ Срок действия: {config['trial_days']} дней\n"
-                         f"🔧 Имя конфига: {config_name}\n"
-                         f"📍 Адрес: {address}"
-                )
+            await context.bot.send_photo(
+                chat_id=user_id,
+                photo=open(result['qr_path'], 'rb'),
+                caption="QR код для импорта в WireGuard"
+            )
+            
+            await context.bot.send_document(
+                chat_id=user_id,
+                document=result['config'].encode('utf-8'),
+                filename=f"{result['config_name']}.conf",
+                caption="Конфигурационный файл WireGuard"
+            )
+            
+            # Очищаем временные файлы
+            if os.path.exists(result['qr_path']):
+                os.remove(result['qr_path'])
                 
-                await context.bot.send_photo(
-                    chat_id=user_id,
-                    photo=open(qr_path, 'rb'),
-                    caption="QR код для импорта"
-                )
-                
-                await context.bot.send_document(
-                    chat_id=user_id,
-                    document=client_config.encode('utf-8'),
-                    filename=f"{config_name}.conf",
-                    caption="Конфигурационный файл"
-                )
-                
-                os.remove(qr_path)
-            else:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text="❌ Ошибка генерации QR кода"
-                )
         else:
             await context.bot.send_message(
                 chat_id=user_id,
-                text="❌ Ошибка при создании конфига в WireGuard"
+                text="❌ Ошибка при создании пробного конфига"
             )
             
     except Exception as e:
@@ -283,18 +472,23 @@ async def create_trial_config(query, context):
 # Помощь
 async def help_command(query, context):
     help_text = """
-🤖 **WireGuard VPN Bot**
+🤖 **VPN Bot - Помощь**
 
 📋 **Доступные команды:**
-/start - Начать работу с ботом
-/myconfigs - Показать мои конфиги
+/start - Главное меню
+/myconfigs - Мои конфигурации
 
 💡 **Как использовать:**
-1. Нажмите "Бесплатный пробный период"
+1. Нажмите «Бесплатный пробный период»
 2. Получите конфиг и QR код
-3. Импортируйте в WireGuard клиент
+3. Импортируйте в приложение WireGuard
 
-❓ **Проблемы?** Свяжитесь с администратором.
+💳 **Оплата:**
+- Оплата по СБП
+- Отправьте скриншот перевода
+- Получите конфиг после проверки
+
+❓ **Проблемы?** Свяжитесь с @администратор
 """
     await context.bot.send_message(chat_id=query.from_user.id, text=help_text)
 
@@ -308,16 +502,17 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
-        [InlineKeyboardButton("⚙️ Настройки", callback_data='admin_settings')]
+        [InlineKeyboardButton("⚙️ Настройки", callback_data='admin_settings')],
+        [InlineKeyboardButton("👥 Пользователи", callback_data='admin_users')]
     ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
         f"👑 Админ панель\n\n"
-        f"Сервер: {config['server_ip']}\n"
-        f"Цена: {config['price']} руб.\n"
-        f"Пробный период: {config['trial_days']} дней",
+        f"🌐 Сервер: {config['server_ip']}\n"
+        f"💰 Цена: {config['price']} руб.\n"
+        f"🎁 Пробный: {config['trial_days']} дней",
         reply_markup=reply_markup
     )
 
@@ -329,7 +524,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = query.from_user.id
         
         if query.data == 'buy':
-            await context.bot.send_message(chat_id=user_id, text="💳 Функция оплаты в разработке")
+            await show_payment_methods(query, context)
         elif query.data == 'trial':
             await create_trial_config(query, context)
         elif query.data == 'my_configs':
@@ -348,7 +543,10 @@ async def show_my_configs_callback(query, context):
     user_id = query.from_user.id
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT config_name, address, status, expires_at FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("""
+        SELECT config_name, address, status, expires_at, is_trial, is_paid 
+        FROM users WHERE user_id = ? ORDER BY created_at DESC
+    """, (user_id,))
     configs = cursor.fetchall()
     conn.close()
     
@@ -356,11 +554,14 @@ async def show_my_configs_callback(query, context):
         text = "📱 Ваши конфигурации:\n\n"
         for config in configs:
             status_emoji = "✅" if config[2] == 'active' else "❌"
-            text += f"{status_emoji} {config[0]} - {config[1]}\n"
+            config_type = "🎁 Пробный" if config[4] == 1 else "💳 Платный"
+            text += f"{status_emoji} {config_type} - {config[0]}\n"
+            text += f"📍 Адрес: {config[1]}\n"
             if config[3]:
-                text += f"   ⏰ До: {config[3]}\n"
+                text += f"⏰ До: {config[3]}\n"
+            text += "\n"
     else:
-        text = "У вас пока нет конфигураций."
+        text = "У вас пока нет конфигураций.\n\nИспользуйте пробный период или купите доступ!"
     
     await context.bot.send_message(chat_id=user_id, text=text)
 
@@ -397,8 +598,14 @@ async def admin_stats(query, context):
     cursor.execute("SELECT COUNT(*) FROM users WHERE is_trial = 1")
     trial_users = cursor.fetchone()[0]
     
+    cursor.execute("SELECT COUNT(*) FROM users WHERE is_paid = 1")
+    paid_users = cursor.fetchone()[0]
+    
     cursor.execute("SELECT COUNT(*) FROM users WHERE status = 'active'")
     active_users = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT SUM(amount) FROM payments WHERE status = 'completed'")
+    total_revenue = cursor.fetchone()[0] or 0
     
     conn.close()
     
@@ -409,7 +616,9 @@ async def admin_stats(query, context):
 
 👥 Всего пользователей: {total_users}
 🎁 Пробных: {trial_users}
+💳 Платных: {paid_users}
 ✅ Активных: {active_users}
+💰 Общая выручка: {total_revenue} руб.
 
 ⚙️ Настройки:
 💰 Цена: {config['price']} руб.
@@ -433,6 +642,7 @@ def main():
         application.add_handler(CommandHandler("admin", admin_command))
         application.add_handler(CommandHandler("myconfigs", show_my_configs))
         application.add_handler(CallbackQueryHandler(button_handler))
+        application.add_handler(MessageHandler(filters.PHOTO, handle_screenshot))
         
         # Запуск бота
         logger.info("Запуск бота...")
