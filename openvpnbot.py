@@ -109,43 +109,51 @@ def save_config(config):
 
 # Инициализация базы данных
 def init_db():
-    config = load_config()
-    db_path = config.get('db_path', DB_FILE)
-    
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER,
-            username TEXT,
-            config_name TEXT,
-            private_key TEXT,
-            certificate TEXT,
-            status TEXT DEFAULT 'active',
-            is_trial INTEGER DEFAULT 0,
-            is_paid INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            expires_at DATETIME
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER,
-            amount INTEGER,
-            payment_method TEXT,
-            status TEXT DEFAULT 'pending',
-            screenshot_path TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    print("База данных успешно инициализирована!")  # Добавьте эту строку если хотите
+    try:
+        config = load_config()
+        db_path = config.get('db_path', 'vpn_bot.db')
+        print(f"Инициализация БД по пути: {db_path}")
+        
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Таблица users
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER,
+                username TEXT,
+                config_name TEXT,
+                private_key TEXT,
+                certificate TEXT,
+                status TEXT DEFAULT 'active',
+                is_trial INTEGER DEFAULT 0,
+                is_paid INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME
+            )
+        ''')
+        
+        # Таблица payments
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER,
+                amount INTEGER,
+                payment_method TEXT,
+                status TEXT DEFAULT 'pending',
+                screenshot_path TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        print("✅ База данных успешно инициализирована!")
+        
+    except Exception as e:
+        print(f"❌ Ошибка инициализации БД: {e}")
+        raise
 
 # Генерация случайного имени для конфига
 def generate_config_name(user_id):
@@ -162,25 +170,45 @@ def create_ovpn_client_certificate(username):
         client_name = f"client_{username}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         # Переходим в директорию easy-rsa
+        original_dir = os.getcwd()
         os.chdir(easy_rsa_dir)
         
-        # Создаем клиентский сертификат
-        result = subprocess.run([
-            './easyrsa', 'build-client-full', client_name, 'nopass'
-        ], capture_output=True, text=True, timeout=120)
+        print(f"Создание сертификата для: {client_name}")
         
-        if result.returncode != 0:
-            logger.error(f"Certificate generation error: {result.stderr}")
+        # Создаем клиентский сертификат (автоматически подтверждаем)
+        process = subprocess.Popen([
+            './easyrsa', 'build-client-full', client_name, 'nopass'
+        ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        
+        # Автоматически отвечаем 'yes' на все запросы
+        stdout, stderr = process.communicate(input='yes\n')
+        
+        if process.returncode != 0:
+            logger.error(f"Certificate generation error: {stderr}")
+            os.chdir(original_dir)
             return None, None, None
         
         # Читаем приватный ключ
-        with open(f"{easy_rsa_dir}pki/private/{client_name}.key", 'r') as f:
-            private_key = f.read()
+        private_key_path = f"{easy_rsa_dir}pki/private/{client_name}.key"
+        if os.path.exists(private_key_path):
+            with open(private_key_path, 'r') as f:
+                private_key = f.read()
+        else:
+            logger.error(f"Private key not found: {private_key_path}")
+            os.chdir(original_dir)
+            return None, None, None
         
         # Читаем сертификат
-        with open(f"{easy_rsa_dir}pki/issued/{client_name}.crt", 'r') as f:
-            certificate = f.read()
+        cert_path = f"{easy_rsa_dir}pki/issued/{client_name}.crt"
+        if os.path.exists(cert_path):
+            with open(cert_path, 'r') as f:
+                certificate = f.read()
+        else:
+            logger.error(f"Certificate not found: {cert_path}")
+            os.chdir(original_dir)
+            return None, None, None
         
+        os.chdir(original_dir)
         return client_name, private_key, certificate
         
     except Exception as e:
@@ -347,10 +375,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         username = update.effective_user.username or "Unknown"
         
-        # Добавляем пользователя в базу если его нет
+        # Проверяем что БД существует и доступна
         config = load_config()
-        conn = sqlite3.connect(config.get('db_path', DB_FILE))
+        db_path = config.get('db_path', 'vpn_bot.db')
+        if not os.path.exists(db_path):
+            init_db()  # Переинициализируем если БД удалена
+            
+        # Добавляем пользователя в базу если его нет
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
+        
+        # Проверяем существует ли таблица
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+        if not cursor.fetchone():
+            conn.close()
+            init_db()  # Пересоздаем таблицы
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+        
         cursor.execute("SELECT id FROM users WHERE user_id = ?", (user_id,))
         if not cursor.fetchone():
             cursor.execute(
@@ -359,6 +401,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             conn.commit()
         conn.close()
+        
+        # ... остальной код
         
         keyboard = [
             [InlineKeyboardButton("💰 Купить доступ (100 руб.)", callback_data='buy')],
