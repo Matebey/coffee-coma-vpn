@@ -145,6 +145,7 @@ def init_db():
     
     conn.commit()
     conn.close()
+    print("База данных успешно инициализирована!")  # Добавьте эту строку если хотите
 
 # Генерация случайного имени для конфига
 def generate_config_name(user_id):
