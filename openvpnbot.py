@@ -142,6 +142,45 @@ def generate_config_name(user_id):
     random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
     return f"user_{user_id}_{random_suffix}"
 
+# Вспомогательные функции для извлечения чистых сертификатов и ключей
+def extract_certificate_content(cert_content):
+    """Извлекает только содержимое сертификата между BEGIN и END"""
+    lines = cert_content.split('\n')
+    certificate_lines = []
+    in_certificate = False
+    
+    for line in lines:
+        if '-----BEGIN CERTIFICATE-----' in line:
+            in_certificate = True
+            certificate_lines.append(line)  # Добавляем BEGIN line
+            continue
+        elif '-----END CERTIFICATE-----' in line:
+            certificate_lines.append(line)  # Добавляем END line
+            break
+        elif in_certificate:
+            certificate_lines.append(line)
+    
+    return '\n'.join(certificate_lines)
+
+def extract_private_key_content(key_content):
+    """Извлекает только содержимое приватного ключа между BEGIN и END"""
+    lines = key_content.split('\n')
+    key_lines = []
+    in_key = False
+    
+    for line in lines:
+        if '-----BEGIN PRIVATE KEY-----' in line:
+            in_key = True
+            key_lines.append(line)  # Добавляем BEGIN line
+            continue
+        elif '-----END PRIVATE KEY-----' in line:
+            key_lines.append(line)  # Добавляем END line
+            break
+        elif in_key:
+            key_lines.append(line)
+    
+    return '\n'.join(key_lines)
+
 # Создание клиентского сертификата OpenVPN
 def create_ovpn_client_certificate(username):
     try:
@@ -176,7 +215,8 @@ def create_ovpn_client_certificate(username):
         private_key_path = os.path.join(keys_dir, f"{client_name}.key")
         if os.path.exists(private_key_path):
             with open(private_key_path, 'r') as f:
-                private_key = f.read()
+                private_key_content = f.read()
+                private_key = extract_private_key_content(private_key_content)
         else:
             logger.error(f"Private key not found: {private_key_path}")
             os.chdir(original_dir)
@@ -186,7 +226,8 @@ def create_ovpn_client_certificate(username):
         cert_path = os.path.join(issued_dir, f"{client_name}.crt")
         if os.path.exists(cert_path):
             with open(cert_path, 'r') as f:
-                certificate = f.read()
+                certificate_content = f.read()
+                certificate = extract_certificate_content(certificate_content)
         else:
             logger.error(f"Certificate not found: {cert_path}")
             os.chdir(original_dir)
@@ -204,32 +245,20 @@ def generate_ovpn_client_config(client_name, private_key, certificate):
     config = load_config()
     
     # Читаем CA сертификат
-    ca_cert_path = config.get('ca_cert_path', '/etc/openvpn/easy-rsa/pki/ca.crt')
-    with open(ca_cert_path, 'r') as f:
-        ca_cert = f.read()
+    with open(config['ca_cert_path'], 'r') as f:
+        ca_cert_content = f.read()
+        ca_cert = extract_certificate_content(ca_cert_content)
     
-    # Читаем TLS ключ (если используется)
-    ta_key_path = config.get('ta_key_path', '/etc/openvpn/easy-rsa/ta.key')
+    # Читаем TLS ключ
     ta_key = ""
-    if os.path.exists(ta_key_path):
-        with open(ta_key_path, 'r') as f:
-            ta_key = f.read()
+    if os.path.exists(config['ta_key_path']):
+        with open(config['ta_key_path'], 'r') as f:
+            ta_key_content = f.read()
+            # Для TLS ключа просто читаем как есть (это не сертификат)
+            ta_key = ta_key_content
     
-    # Используем шаблон конфига если он указан
-    client_config_template = config.get('client_config_template')
-    if client_config_template and os.path.exists(client_config_template):
-        with open(client_config_template, 'r') as f:
-            client_config = f.read()
-        
-        # Заменяем плейсхолдеры
-        client_config = client_config.replace('<ca>', ca_cert)
-        client_config = client_config.replace('<cert>', certificate)
-        client_config = client_config.replace('<key>', private_key)
-        if ta_key:
-            client_config = client_config.replace('<tls-auth>', ta_key)
-    else:
-        # Генерируем конфиг вручную
-        client_config = f"""client
+    # Генерируем чистый конфиг без лишних опций
+    client_config = f"""client
 dev tun
 proto {config['protocol']}
 remote {config['server_ip']} {config['server_port']}
@@ -238,10 +267,9 @@ nobind
 persist-key
 persist-tun
 remote-cert-tls server
-cipher AES-256-CBC
+cipher AES-256-GCM
 auth SHA256
 verb 3
-key-direction 1
 
 <ca>
 {ca_cert}
@@ -256,12 +284,11 @@ key-direction 1
 </key>
 """
     
-        # Добавляем TLS auth если используется
-        if ta_key:
-            client_config += f"""
-<tls-auth>
+    if ta_key:
+        client_config += f"""
+<tls-crypt>
 {ta_key}
-</tls-auth>
+</tls-crypt>
 """
     
     return client_config
