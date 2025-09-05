@@ -1,3 +1,4 @@
+from config import load_config
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, MessageHandler, filters
 import datetime
