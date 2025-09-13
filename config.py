@@ -23,7 +23,7 @@ def init_config():
             "price": 50,
             "sbp_link": "https://yoomoney.ru/to/4100119260614239/0",
             "wallet_number": "https://yoomoney.ru/to/4100119260614239/0",
-            "dns_servers": "1.1.1.1,8.8.8.8",
+            "dns_servers": "1.1.1.1,1.0.0.1",
             "ca_cert_path": "/etc/openvpn/easy-rsa/pki/ca.crt",
             "ta_key_path": "/etc/openvpn/easy-rsa/ta.key",
             "openvpn_management_ip": "127.0.0.1",
